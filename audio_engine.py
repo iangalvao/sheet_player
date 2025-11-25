@@ -23,7 +23,6 @@ NOTE_OFFSETS = {
     "B":   2,
 }
 
-
 def pitch_to_frequency(pitch: str) -> float:
     if pitch.upper() == "REST":
         return 0.0
@@ -41,30 +40,27 @@ def pitch_to_frequency(pitch: str) -> float:
 
 class AudioEngine:
     """
-    Simple two-voice mixer:
-      - voice 1: current note (sine, with envelope)
-      - voice 2: short click for metronome
+    Simple 2-voice mixer:
+      - note: precomputed buffer
+      - click: short precomputed buffer
 
-    One continuous OutputStream with a callback that mixes both.
+    Everything is mixed in one OutputStream callback.
     """
     def __init__(self, sample_rate: int = SAMPLE_RATE):
         self.sample_rate = sample_rate
 
-        # --- note voice state ---
-        self._note_active = False
-        self._note_freq = 0.0
-        self._note_phase = 0.0
-        self._note_remaining_samples = 0
-        self._note_volume = 0.25
+        # note voice
+        self._note_wave: Optional[np.ndarray] = None
+        self._note_index: int = 0
+        self._note_active: bool = False
 
-        # --- click voice state ---
+        # click voice
         self._click_wave: Optional[np.ndarray] = None
-        self._click_index = 0
-        self._click_active = False
+        self._click_index: int = 0
+        self._click_active: bool = False
 
         self._lock = threading.Lock()
 
-        # Start stream
         self._stream = sd.OutputStream(
             samplerate=self.sample_rate,
             channels=1,
@@ -73,115 +69,110 @@ class AudioEngine:
         )
         self._stream.start()
 
-    # ========== PUBLIC API ==========
+    # ---------- helpers ----------
 
-    def play_note(self, pitch: str, duration_s: float, volume: float = 0.25):
-        freq = pitch_to_frequency(pitch)
+    def _make_sine(self, freq: float, duration_s: float,
+                   volume: float = 0.25,
+                   fade_in_ms: float = 5.0,
+                   fade_out_ms: float = 5.0) -> np.ndarray:
         if freq <= 0.0 or duration_s <= 0:
-            # treat as rest: just turn note off
-            with self._lock:
-                self._note_active = False
-            return
+            return np.zeros(0, dtype=np.float32)
 
+        volume = float(max(0.0, min(volume, 1.0)))
         num_samples = int(self.sample_rate * duration_s)
         if num_samples <= 0:
-            return
-
-        with self._lock:
-            self._note_freq = freq
-            self._note_phase = 0.0
-            self._note_remaining_samples = num_samples
-            self._note_volume = float(max(0.0, min(volume, 1.0)))
-            self._note_active = True
-
-    def trigger_click(self, strong: bool = False):
-        """
-        Prepare a short click waveform that the callback will mix on top.
-        """
-        freq = 1200.0 if strong else 800.0
-        duration_s = 0.06 if strong else 0.04
-        volume = 0.4 if strong else 0.3
-
-        num_samples = int(self.sample_rate * duration_s)
-        if num_samples <= 0:
-            return
+            return np.zeros(0, dtype=np.float32)
 
         t = np.linspace(0, duration_s, num_samples, endpoint=False)
         wave = np.sin(2 * math.pi * freq * t).astype(np.float32)
 
-        # fast attack, slightly longer release to avoid clicks
-        fade_in_samples = max(1, int(self.sample_rate * 0.001))
-        fade_out_samples = max(1, int(self.sample_rate * 0.01))
+        # basic envelope
+        fade_in_samples = int(self.sample_rate * (fade_in_ms / 1000.0))
+        fade_out_samples = int(self.sample_rate * (fade_out_ms / 1000.0))
         fade_in_samples = min(fade_in_samples, num_samples // 2)
         fade_out_samples = min(fade_out_samples, num_samples // 2)
 
         envelope = np.ones(num_samples, dtype=np.float32)
-        envelope[:fade_in_samples] = np.linspace(0.0, 1.0, fade_in_samples)
-        envelope[-fade_out_samples:] = np.linspace(1.0, 0.0, fade_out_samples)
+        if fade_in_samples > 0:
+            envelope[:fade_in_samples] = np.linspace(0.0, 1.0, fade_in_samples)
+        if fade_out_samples > 0:
+            envelope[-fade_out_samples:] = np.linspace(1.0, 0.0, fade_out_samples)
 
         wave *= envelope * volume
+        return wave
+
+    # ---------- public API ----------
+
+    def play_note(self, pitch: str, duration_s: float, volume: float = 0.25):
+        freq = pitch_to_frequency(pitch)
+        wave = self._make_sine(freq, duration_s, volume,
+                               fade_in_ms=5.0, fade_out_ms=20.0)
+
+        with self._lock:
+            if wave.size == 0:
+                self._note_active = False
+                self._note_wave = None
+                self._note_index = 0
+            else:
+                self._note_wave = wave
+                self._note_index = 0
+                self._note_active = True
+
+    def trigger_click(self, strong: bool = False):
+        freq = 1200.0 if strong else 800.0
+        duration_s = 0.06 if strong else 0.04
+        volume = 0.4 if strong else 0.3
+
+        wave = self._make_sine(freq, duration_s, volume,
+                               fade_in_ms=1.0, fade_out_ms=10.0)
 
         with self._lock:
             self._click_wave = wave
             self._click_index = 0
-            self._click_active = True
+            self._click_active = wave.size > 0
 
     def close(self):
         self._stream.stop()
         self._stream.close()
 
-    # ========== CALLBACK ==========
+    # ---------- callback ----------
 
     def _callback(self, outdata, frames, time, status):
         if status:
-            # You could log this
+            # You can print/log status if needed
             pass
 
         buf = np.zeros(frames, dtype=np.float32)
 
         with self._lock:
-            # --- Note voice ---
-            if self._note_active and self._note_remaining_samples > 0:
-                to_generate = min(frames, self._note_remaining_samples)
-                # simple oscillator with continuity of phase
-                # phase_inc = 2.0 * math.pi * self._note_freq / (self.sample_rate)
-                phase_inc = 2.0 * math.pi * self._note_freq / (self.sample_rate)
-                phases = self._note_phase + phase_inc * np.arange(to_generate, dtype=np.float32)
-                self._note_phase = float(phases[-1] + phase_inc)
-
-                # basic envelope: fade in/out 5ms
-                env = np.ones(to_generate, dtype=np.float32)
-                total = self._note_remaining_samples
-                # approximate fade on first/last 5ms of the note
-                fade_samples = int(self.sample_rate * 0.005)
-                fade_samples = min(fade_samples, total // 2, to_generate)
-
-                if fade_samples > 0:
-                    # If we're at the very beginning of the note
-                    if self._note_remaining_samples == total:
-                        env[:fade_samples] *= np.linspace(0.0, 1.0, fade_samples)
-                    # If we're near the end
-                    if self._note_remaining_samples <= fade_samples:
-                        env_tail = np.linspace(1.0, 0.0, fade_samples)
-                        env[-fade_samples:] *= env_tail[-fade_samples:]
-
-                note_wave = np.sin(phases) * env * self._note_volume * 0.5
-
-                buf[:to_generate] += note_wave
-                self._note_remaining_samples -= to_generate
-                if self._note_remaining_samples <= 0:
+            # NOTE voice
+            if self._note_active and self._note_wave is not None:
+                remaining = len(self._note_wave) - self._note_index
+                if remaining > 0:
+                    to_copy = min(frames, remaining)
+                    buf[:to_copy] += self._note_wave[
+                        self._note_index:self._note_index + to_copy
+                    ]
+                    self._note_index += to_copy
+                if self._note_index >= len(self._note_wave):
                     self._note_active = False
+                    self._note_wave = None
+                    self._note_index = 0
 
-            # --- Click voice ---
+            # CLICK voice
             if self._click_active and self._click_wave is not None:
                 remaining = len(self._click_wave) - self._click_index
                 if remaining > 0:
                     to_copy = min(frames, remaining)
-                    buf[:to_copy] += self._click_wave[self._click_index:self._click_index + to_copy]
+                    buf[:to_copy] += self._click_wave[
+                        self._click_index:self._click_index + to_copy
+                    ]
                     self._click_index += to_copy
                 if self._click_index >= len(self._click_wave):
                     self._click_active = False
                     self._click_wave = None
                     self._click_index = 0
 
+        # Simple safety limiter to avoid clipping
+        np.clip(buf, -1.0, 1.0, out=buf)
         outdata[:] = buf.reshape(-1, 1)
