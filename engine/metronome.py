@@ -1,7 +1,8 @@
 # metronome.py
 import time
 from typing import Callable, Optional
-from audio_engine import AudioEngine
+from engine.audio_engine import AudioEngine
+from engine.timebase import beat_duration_ms
 
 class Metronome:
     def __init__(self,
@@ -51,8 +52,8 @@ class Metronome:
         # NEW: non-blocking trigger, mix with note
         self.audio.trigger_click(strong=strong)
 
-        interval_ms = int(60000 / self.tempo_bpm)
-        self.root.after(interval_ms, self._schedule_next)
+        beat_interval_ms = beat_duration_ms(self.tempo_bpm)
+        self.root.after(beat_interval_ms, self._schedule_next)
 
     def get_last_beat_info(self) -> tuple[int, Optional[int]]:
         """

@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import tkinter as tk
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
-from staff_view import StaffView
-from score import Score
+
+from ui.staff_view import StaffView
+from domain.score import Score
 
 if TYPE_CHECKING:
     from app import App
@@ -85,17 +86,21 @@ class Widgets:
             text="Play from selected",
             command=self.app.on_play_from_selected,
         ).pack(side=tk.LEFT, padx=5)
-        tk.Button(
-            controls,
-            text="Start next bar",
-            command=self.app.on_start_next_bar,
-        ).pack(side=tk.LEFT, padx=5)
         tk.Button(controls, text="Pause", command=self.app.on_pause).pack(
             side=tk.LEFT, padx=5
         )
         tk.Button(controls, text="Stop", command=self.app.on_stop).pack(
             side=tk.LEFT, padx=5
         )
+
+        # Stick-to-next-bar option
+        self.stick_to_bar_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            controls,
+            text="Stick to next bar",
+            variable=self.stick_to_bar_var,
+            command=self.app.on_toggle_stick_to_bar,
+        ).pack(side=tk.LEFT, padx=10)
 
         # Loop toggle
         self.loop_var = tk.BooleanVar(value=False)
@@ -133,3 +138,11 @@ class Widgets:
 
     def set_status(self, text: str) -> None:
         self.status_var.set(text)
+        
+    def set_selection_region(self, measure_index: int, beat_start: float, beat_end: float) -> None:
+        """
+        Optional hook for a visual overlay on the staff.
+        Only calls through if StaffView implements set_selection_region.
+        """
+        if hasattr(self.staff_view, "set_selection_region"):
+            self.staff_view.set_selection_region(measure_index, beat_start, beat_end)
