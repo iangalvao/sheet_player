@@ -1,4 +1,4 @@
-# staff_view.py
+# ui/staff_view.py
 from __future__ import annotations
 
 import tkinter as tk
@@ -127,39 +127,37 @@ class StaffView(tk.Canvas):
 
         measure_width = usable_width / num_measures
 
-        # Vertical layout: 5 lines, centered-ish
+        # Vertical layout: 5 lines, centered
         staff_height = height - self.top_margin - self.bottom_margin
-        line_spacing = staff_height / 8.0  # 4 spaces -> 8 half-steps
-        middle_line_y = self.top_margin + staff_height / 2.0
+
+        # IMPORTANT: same spacing as _draw_staff
+        line_spacing = staff_height / 4.0          # distance between staff lines
+        half_step = line_spacing / 2.0             # one diatonic step (line or space)
+
+        # Middle line (line 3) is 2 * line_spacing below top line
+        middle_line_y = self.top_margin + 2 * line_spacing
 
         # Time mapping: use beats within each measure
         beats_per_bar = self.score.time_signature[0] if self.score.time_signature else 4
 
-        # We'll iterate in the same order as score.all_notes()
         for mi, measure in enumerate(measures):
             measure_start_x = self.left_margin + mi * measure_width
 
-            # Precompute beat positions for notes in this measure
             beat_pos = 0.0
             for ni, note in enumerate(measure.notes):
-                # Horizontal: map note center to fraction of measure width
-                # based on beat center
+                # Horizontal: center by beat
                 center_beat = beat_pos + note.duration_beats / 2.0
-                # Normalize: 0..beats_per_bar -> 0..1
                 if beats_per_bar > 0:
                     t = min(max(center_beat / beats_per_bar, 0.0), 1.0)
                 else:
                     t = 0.0
-
                 x = measure_start_x + t * measure_width
 
-                # Vertical: pitch -> staff steps
+                # Vertical: pitch -> staff steps (each step is a line or space)
                 step = self._pitch_to_staff_step(note.pitch)
-                # One diatonic step = half of line spacing
-                y = middle_line_y - step * (line_spacing / 2.0)
+                y = middle_line_y - step * half_step
 
                 self.note_positions.append((x, y))
-
                 beat_pos += note.duration_beats
 
     def _redraw(self) -> None:

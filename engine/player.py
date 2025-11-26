@@ -150,9 +150,14 @@ class PlaybackController:
 
         start_beat = self.clip.events[index].start_beats
         self.transport.set_position_beats(start_beat)
-        self._last_processed_beats = None
+
+        # IMPORTANT: initialize last_processed just *before* start_beat,
+        # so the first tick will see the note in (last, current].
+        self._last_processed_beats = start_beat - 1e-6
+
         self.transport.play()
         self.is_playing = True
+
 
     def play(self) -> None:
         """

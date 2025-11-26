@@ -1,0 +1,50 @@
+{
+  "title": "Simple Flute Tune",
+  "tempo_bpm": 80,
+  "time_signature": [
+    4,
+    4
+  ],
+  "measures": [
+    {
+      "notes": [
+        {
+          "pitch": "E4",
+          "duration_beats": 1.0
+        },
+        {
+          "pitch": "B4",
+          "duration_beats": 1.0
+        },
+        {
+          "pitch": "B4",
+          "duration_beats": 1.0
+        },
+        {
+          "pitch": "D5",
+          "duration_beats": 1.0
+        }
+      ]
+    },
+    {
+      "notes": [
+        {
+          "pitch": "F5",
+          "duration_beats": 1.0
+        },
+        {
+          "pitch": "E5",
+          "duration_beats": 1.0
+        },
+        {
+          "pitch": "D5",
+          "duration_beats": 1.0
+        },
+        {
+          "pitch": "C5",
+          "duration_beats": 1.0
+        }
+      ]
+    }
+  ]
+}
