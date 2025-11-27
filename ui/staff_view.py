@@ -5,7 +5,7 @@ import tkinter as tk
 from typing import List, Tuple, Optional
 
 from domain.score import Score
-
+from domain.theory import pitch_to_diatonic_index
 
 class StaffView(tk.Canvas):
     """
@@ -65,44 +65,13 @@ class StaffView(tk.Canvas):
 
     # ===== Internal helpers ====================================
 
-    def _pitch_to_diatonic_index(self, pitch: str) -> int:
-        """
-        Map 'C4', 'D5' etc. to an integer index: 7*octave + letter_index
-        Accidentals are ignored for vertical positioning.
-        """
-        up = pitch.upper()
-        if up == "REST":
-            # Rest: just use reference line
-            ref_letter = "B"
-            ref_oct = 4
-            return (
-                self._letter_order.index(ref_letter)
-                + 7 * ref_oct
-            )
-
-        i = 0
-        while i < len(pitch) and not pitch[i].isdigit():
-            i += 1
-        name = pitch[:i]
-        octave_str = pitch[i:] or "4"
-
-        letter = name[0].upper()
-        octave = int(octave_str)
-
-        if letter not in self._letter_order:
-            # fallback to reference
-            letter = "B"
-            octave = 4
-
-        return self._letter_order.index(letter) + 7 * octave
-
     def _pitch_to_staff_step(self, pitch: str) -> int:
         """
         Convert pitch to a diatonic step relative to B4 = 0.
         Each step is one line/space on the staff.
         """
-        idx = self._pitch_to_diatonic_index(pitch)
-        ref_idx = self._pitch_to_diatonic_index(self._ref_pitch)
+        idx = pitch_to_diatonic_index(pitch)
+        ref_idx = pitch_to_diatonic_index(self._ref_pitch)
         return idx - ref_idx
 
     def _recompute_note_positions(self) -> None:

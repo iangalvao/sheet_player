@@ -14,9 +14,11 @@ from engine.metronome import Metronome
 from ui.widgets import Widgets
 from domain.editor import EditorController
 from engine.timebase import beat_label_from_zero_based, compute_next_bar_start_time_ms
-from engine.project import Project, Track, TrackType, MidiClip
+from engine.project import Project, Track
 from engine.transport import Transport, Scheduler
 from engine.io import load_project_or_score, save_project_to_json  # or adjust path
+from engine.session import Session
+from domain.theory import transpose_pitch_diatonic
 
 
 
@@ -37,10 +39,6 @@ def save_score_to_json(score: Score, path: str) -> None:
 
 
 class App:
-    LETTER_ORDER = ["C", "D", "E", "F", "G", "A", "B"]
-    MIN_DIATONIC_INDEX = LETTER_ORDER.index("E") + 7 * 4  # E4
-    MAX_DIATONIC_INDEX = LETTER_ORDER.index("F") + 7 * 5  # F5
-
     def __init__(self) -> None:
         self.root = tk.Tk()
         self.root.title("Flute Practice Prototype")
@@ -49,7 +47,7 @@ class App:
         self.score: Score = self._make_demo_score()
         self.project: Project | None = None
         self.main_track: Track | None = None
-        self.main_clip = None  # type: MidiClip | None
+        self.main_clip = None 
                 # After self.score and self.project are ready:
         self.transport = Transport(
             tempo_bpm=self.score.tempo_bpm,
@@ -68,10 +66,8 @@ class App:
         self._build_project_from_score()
 
 
-        # Editor state
-        self.selected_index: int = 0
-        self.loop_start_index: int = 0
-        self.loop_end_index: int = 0
+        # Editor state        
+        self.session = Session(self.score, self.editor)
         self.on_toggle_stick_to_bar = False
         # UI
         self.widgets: WidgetsType = Widgets(self.root, self)
@@ -108,6 +104,7 @@ class App:
 
         # Editor + widgets
         self.editor.set_score(self.score)
+        self.session.score = self.score
         self.widgets.set_score(self.editor.score)
         self.widgets.tempo_var.set(str(self.score.tempo_bpm))
 
@@ -120,22 +117,20 @@ class App:
         if self.metronome is not None:
             self.metronome.set_tempo(self.score.tempo_bpm)
             self.metronome.set_beats_per_bar(self.score.time_signature[0])
-
+       
         # Player
         if self.player is not None:
             self.player.reset_score(self.score, self.main_clip)
             self.player.notes_flat = self.editor.get_flat_notes()
 
-            # Default loop: whole song
-            if self.player.notes_flat:
-                self.loop_start_index = 0
-                self.loop_end_index = len(self.player.notes_flat) - 1
-                self.player.set_loop_region(self.loop_start_index,
-                                            self.loop_end_index)
+            # Re-attach to session & reset loop
+            self.session.score = self.score
+            self.session.attach_player(self.player)
+            self.session.initialize_loop_region()
+
 
         # UI selection & repaint
         self.editor.set_selection_index(0)
-        self.selected_index = 0
         self.update_ui(0)
 
     def _build_project_from_score(self) -> None:
@@ -189,7 +184,6 @@ class App:
         }
         return Score.from_dict(data)
 
-    
     def _init_engines(self) -> None:
         # Metronome
         beats_per_bar = self.score.time_signature[0]
@@ -211,60 +205,20 @@ class App:
             self._player_update_callback,
         )
 
-        # Default loop: whole song
-        if self.player.notes_flat:
-            self.loop_start_index = 0
-            self.loop_end_index = len(self.player.notes_flat) - 1
-            self.player.set_loop_region(self.loop_start_index, self.loop_end_index)
+        # NEW: connect player to the session and set default loop
+        self.session.attach_player(self.player)
+        self.session.initialize_loop_region()
 
         # Staff initial score
         self.widgets.set_score(self.editor.score)
-
 
     # ====== Pitch and Beat helpers (diatonic, clamped) ==================
 
     def _beat_to_fraction_str(self, beat_zero_based: float) -> str:
        return beat_label_from_zero_based(beat_zero_based)
 
-    def pitch_to_diatonic_index(self, pitch: str) -> int:
-        up = pitch.upper()
-        if up == "REST":
-            return self.MIN_DIATONIC_INDEX
 
-        i = 0
-        while i < len(pitch) and not pitch[i].isdigit():
-            i += 1
-        name = pitch[:i]
-        octave_str = pitch[i:] or "4"
-
-        letter = name[0].upper()
-        octave = int(octave_str)
-
-        if letter not in self.LETTER_ORDER:
-            return self.MIN_DIATONIC_INDEX
-
-        return self.LETTER_ORDER.index(letter) + 7 * octave
-
-    def diatonic_index_to_pitch(self, index: int) -> str:
-        octave, letter_idx = divmod(index, 7)
-        letter = self.LETTER_ORDER[letter_idx]
-        return f"{letter}{octave}"
-
-    def transpose_pitch_diatonic(self, pitch: str, steps: int) -> str:
-        up = pitch.upper()
-        if up == "REST":
-            return pitch
-
-        idx = self.pitch_to_diatonic_index(pitch)
-        idx_new = idx + steps
-
-        if idx_new < self.MIN_DIATONIC_INDEX:
-            idx_new = self.MIN_DIATONIC_INDEX
-        if idx_new > self.MAX_DIATONIC_INDEX:
-            idx_new = self.MAX_DIATONIC_INDEX
-
-        return self.diatonic_index_to_pitch(idx_new)
-
+    
     # ====== UI update glue =====================================
 
     def _player_update_callback(self, current_idx, _notes_flat) -> None:
@@ -471,42 +425,33 @@ class App:
         Use the currently selected note as an interval selection
         (its beat range in its measure).
         """
-        idx = self.editor.get_selection_index()
-        if idx is None:
-            print ("Nothing selected")
-            return
-        else:
-            print("Selected:", idx)
-        interval = self.editor.select_interval_for_index(idx)
-        if interval is None:
-            return
-
-        # UI update: highlight still uses the primary note index
-        self.update_ui()
+        changed = self.session.select_interval_for_current_note()
+        if changed:
+            self.update_ui()
 
     def clear_interval_selection(self) -> None:
         """
         Return to note-selection mode (keep current selected note).
         """
-        self.editor.clear_interval_selection()
+        self.session.clear_interval_selection()
         self.update_ui()
 
    
     def on_start(self) -> None:
-        if self.player is None:
+        if not self.session.has_notes():
             return
 
         if self._stick_to_next_bar_enabled():
-            self._schedule_on_next_bar(self.player.play_from_beginning)
+            self._schedule_on_next_bar(self.session.play_from_beginning)
         else:
-            self.player.play_from_beginning()
+            self.session.play_from_beginning()
 
     def on_play_from_selected(self) -> None:
-        if self.player is None or not self.player.notes_flat:
+        if not self.session.has_notes():
             return
 
         def _do():
-            self.player.play_from_index(self.editor.get_selection_index())
+            self.session.play_from_selection()
 
         if self._stick_to_next_bar_enabled():
             self._schedule_on_next_bar(_do)
@@ -514,44 +459,22 @@ class App:
             _do()
 
     def on_pause(self) -> None:
-        if self.player is not None:
-            self.player.pause()
+        self.session.pause()
 
     def on_stop(self) -> None:
-        if self.player is not None:
-            self.player.stop()
-        self.editor.set_selection_index(0)
+        self.session.stop()
+        # Selection is reset by Session.stop; just refresh UI
         self.update_ui(0)
-
+        
     def set_loop_in_at_selection(self) -> None:
-        if self.player is None or not self.player.notes_flat:
-            return
-        idx = self.editor.get_selection_index()
-        if idx is None:
-            return
-
-        self.loop_start_index = idx
-        if self.loop_end_index < self.loop_start_index:
-            self.loop_end_index = self.loop_start_index
-        self.player.set_loop_region(self.loop_start_index, self.loop_end_index)
+        self.session.set_loop_in_at_selection()
 
     def set_loop_out_at_selection(self) -> None:
-        if self.player is None or not self.player.notes_flat:
-            return
-        idx = self.editor.get_selection_index()
-        if idx is None:
-            return
+        self.session.set_loop_out_at_selection()
 
-        self.loop_end_index = idx
-        if self.loop_end_index < self.loop_start_index:
-            self.loop_start_index = self.loop_end_index
-        self.player.set_loop_region(self.loop_start_index, self.loop_end_index)
-  
     def on_toggle_loop(self) -> None:
-        if self.player is None:
-            return
         enabled = self.widgets.loop_var.get()
-        self.player.set_loop_enabled(enabled)
+        self.session.set_loop_enabled(enabled)
 
 
     def _stick_to_next_bar_enabled(self) -> bool:
@@ -598,28 +521,19 @@ class App:
     # ====== Editing (selection + pitch) ========================
 
     def move_selection(self, delta: int) -> None:
-        if self.player is None or not self.player.notes_flat:
-            return
-        new_idx = self.editor.move_selection(delta)
+        new_idx = self.session.move_selection(delta)
         if new_idx is not None:
             self.update_ui(new_idx)
 
     def change_selected_pitch(self, delta_steps: int) -> None:
-        if self.player is None or not self.player.notes_flat:
-            return
-
-        # Ask editor to mutate the score and rebuild its flat notes
-        new_idx = self.editor.transpose_selected(
-            delta_steps,
-            transpose_pitch_func=self.transpose_pitch_diatonic,
-        )
-
+        new_idx = self.session.transpose_selected(delta_steps)
         if new_idx is None:
             return
 
         # Keep player + view in sync with the edited score
         self.widgets.set_score(self.score)
-        self.player.notes_flat = self.editor.get_flat_notes()
+        if self.player is not None:
+            self.player.notes_flat = self.editor.get_flat_notes()
 
         self.update_ui(new_idx)
 
