@@ -1,7 +1,6 @@
 # score.py
 from dataclasses import dataclass
 from typing import List, Dict, Any
-from engine.project import MidiClip, MidiEvent
 
 @dataclass
 class Note:
@@ -50,35 +49,43 @@ class Score:
         for mi, measure in enumerate(self.measures):
             for ni, note in enumerate(measure.notes):
                 yield mi, ni, note
-    def to_midi_clip(self) -> MidiClip:
-        """
-        Flatten this Score into a MidiClip:
-        - events laid out sequentially in beats
-        - clip starts at beat 0
-        - clip length is the total duration of all notes
+ 
+    # def to_midi_clip(self) -> MidiClip:
+    #     """
+    #     Flatten this Score into a MidiClip:
+    #     - events laid out sequentially in beats
+    #     - clip starts at beat 0
+    #     - clip length is the total duration of all notes
 
-        This does NOT change the score; it's just a derived representation
-        that the engine can use for DAW-like playback.
-        """
-        events: list[MidiEvent] = []
-        current_beat = 0.0
+    #     This does NOT change the score; it's just a derived representation
+    #     that the engine can use for DAW-like playback.
+    #     """
+    #     events: list[MidiEvent] = []
+    #     current_beat = 0.0
 
-        for measure in self.measures:
-            for note in measure.notes:
-                duration = note.duration_beats
-                events.append(
-                    MidiEvent(
-                        start_beats=current_beat,
-                        duration_beats=duration,
-                        pitch=note.pitch,
-                        velocity=100,
-                    )
-                )
-                current_beat += duration
+    #     for measure in self.measures:
+    #         for note in measure.notes:
+    #             duration = note.duration_beats
+    #             events.append(
+    #                 MidiEvent(
+    #                     start_beats=current_beat,
+    #                     duration_beats=duration,
+    #                     pitch=note.pitch,
+    #                     velocity=100,
+    #                 )
+    #             )
+    #             current_beat += duration
 
-        length_beats = current_beat
-        return MidiClip(
-            start_beats=0.0,
-            length_beats=length_beats,
-            events=events,
-        )
+    #     length_beats = current_beat
+    #     return MidiClip(
+    #         start_beats=0.0,
+    #         length_beats=length_beats,
+    #         events=events,
+    #     )
+ 
+    def total_beats(self) -> float:
+        total = 0.0
+        for m in self.measures:
+            for n in m.notes:
+                total += n.duration_beats
+        return total

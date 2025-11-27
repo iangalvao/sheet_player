@@ -16,6 +16,7 @@ from domain.editor import EditorController
 from engine.timebase import beat_label_from_zero_based, compute_next_bar_start_time_ms
 from engine.project import Project, Track, TrackType, MidiClip
 from engine.transport import Transport, Scheduler
+from engine.io import load_project_or_score, save_project_to_json  # or adjust path
 
 
 
@@ -87,9 +88,58 @@ class App:
 
     # ====== Setup helpers ======================================
 
+    def _apply_loaded_score_and_project(self,
+                                        score: Score,
+                                        project: Project | None) -> None:
+        """
+        Central place to update app state after loading either:
+        - a legacy Score-only file, or
+        - a full Project+Score file.
+        """
+        # If no project provided, wrap score into a simple one-track project
+        if project is None:
+            project = Project.from_score(score, track_name=score.title or "Flute")
+
+        self.project = project
+        self.score = score
+
+        # Rebuild project/from score (main_clip etc.)
+        self._build_project_from_score(self.score)
+
+        # Editor + widgets
+        self.editor.set_score(self.score)
+        self.widgets.set_score(self.editor.score)
+        self.widgets.tempo_var.set(str(self.score.tempo_bpm))
+
+        # Transport/Metronome
+        if self.transport is not None:
+            self.transport.set_tempo(self.score.tempo_bpm)
+            self.transport.set_time_signature(self.score.time_signature)
+            self.transport.set_position_beats(0.0)
+
+        if self.metronome is not None:
+            self.metronome.set_tempo(self.score.tempo_bpm)
+            self.metronome.set_beats_per_bar(self.score.time_signature[0])
+
+        # Player
+        if self.player is not None:
+            self.player.reset_score(self.score, self.main_clip)
+            self.player.notes_flat = self.editor.get_flat_notes()
+
+            # Default loop: whole song
+            if self.player.notes_flat:
+                self.loop_start_index = 0
+                self.loop_end_index = len(self.player.notes_flat) - 1
+                self.player.set_loop_region(self.loop_start_index,
+                                            self.loop_end_index)
+
+        # UI selection & repaint
+        self.editor.set_selection_index(0)
+        self.selected_index = 0
+        self.update_ui(0)
+
     def _build_project_from_score(self) -> None:
         """
-        (Phase 2)
         Build a Project with a single MIDI track and a single MidiClip
         derived from self.score.
 
@@ -97,24 +147,21 @@ class App:
         use Score as before. Later, playback/transport will read from
         Project/Track/Clip.
         """
-        clip = self.score.to_midi_clip()
         track_name = getattr(self.score, "title", "") or "Track 1"
 
-        main_track = Track(
-            name=track_name,
-            track_type=TrackType.MIDI,
-            clips=[clip],
-        )
+        # Wrap current score into a one-track, one-clip Project
+        self.project = Project.from_score(self.score, track_name=track_name)
 
-        self.project = Project(
-            tempo_bpm=self.score.tempo_bpm,
-            time_signature=self.score.time_signature,
-            tracks=[main_track],
-        )
-
-        self.main_track = main_track
-        self.main_clip = clip
-
+        # Cache main_track / main_clip for convenience
+        if self.project.tracks:
+            self.main_track = self.project.tracks[0]
+            if self.main_track.clips:
+                self.main_clip = self.main_track.clips[0]
+            else:
+                self.main_clip = None
+        else:
+            self.main_track = None
+            self.main_clip = None
 
     def _make_demo_score(self) -> Score:
         data = {
@@ -231,7 +278,6 @@ class App:
             return
 
         mode = self.editor.get_selection_mode()
-        print("mode:", mode)
         # If we're in interval mode, use the stored interval
         if mode == "interval":
             interval = self.editor.get_selection_interval()
@@ -299,6 +345,20 @@ class App:
         self._update_status_from_index(idx)
 
     # ====== Menu / file actions ================================
+    def on_open_project(self) -> None:
+        path = filedialog.askopenfilename(
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+        if not path:
+            return
+
+        try:
+            project, score = load_project_or_score(path)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load file:\n{e}")
+            return
+
+        self._apply_loaded_score_and_project(score, project)
     
     def on_open(self) -> None:
         path = filedialog.askopenfilename(
@@ -311,31 +371,24 @@ class App:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load score:\n{e}")
             return
-        
-        self.score = new_score
-        self._build_project_from_score()
-        self.editor.set_score(self.score)
-        self.widgets.set_score(self.editor.score)
-        self.widgets.tempo_var.set(str(self.editor.score.tempo_bpm))
 
-        # Reuse existing player if present, otherwise create new
+        # No project in this case → None
+        self._apply_loaded_score_and_project(new_score, project=None)
 
-        if self.player is not None:
-            self.player.reset_score(self.score, self.main_clip)
+    def on_save_project_as(self) -> None:
+        path = filedialog.asksaveasfilename(
+            defaultextension=".json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
+        if not path:
+            return
 
-        self.player.notes_flat = self.editor.get_flat_notes()
-        self.editor.set_selection_index(0)
-        if self.player.notes_flat:
-            self.loop_start_index = 0
-            self.loop_end_index = len(self.player.notes_flat) - 1
-            self.player.set_loop_region(self.loop_start_index, self.loop_end_index)
-        if self.transport is not None:
-            self.transport.set_tempo(self.score.tempo_bpm)
-            self.transport.set_time_signature(self.score.time_signature)
-            self.transport.set_position_beats(0.0)
-
-        self.update_ui(0)
-
+        try:
+            # Ensure project reflects current score
+            self.project = Project.from_score(self.score, track_name="Flute")
+            save_project_to_json(path, self.project, self.score)
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save project:\n{e}")
 
     def on_save_as(self) -> None:
         path = filedialog.asksaveasfilename(
@@ -349,8 +402,10 @@ class App:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save score:\n{e}")
 
+
     def on_quit(self) -> None:
         self.root.quit()
+
 
     # ====== Metronome / tempo ==================================
 

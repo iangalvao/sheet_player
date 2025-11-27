@@ -45,6 +45,13 @@ class PlaybackController:
         self.loop_enabled: bool = False
         self.loop_start_index: int = 0
         self.loop_end_index: int = max(0, len(self.notes_flat) - 1)
+        self.loop_start_beats = 0.0
+        self.loop_end_beats = (
+            self.clip.events[self.loop_end_index].start_beats
+            + self.clip.events[self.loop_end_index].duration_beats
+            if self.clip.events else 0.0
+        )
+
 
         # Internal event pointer & time tracking
         self._next_event_index: int = 0
@@ -74,17 +81,29 @@ class PlaybackController:
     # Loop controls (still index-based)
     # ------------------------------------------------------------------
     def set_loop_region(self, start_idx: int, end_idx: int) -> None:
-        if not self.notes_flat:
-            self.loop_enabled = False
+        if not self.notes_flat or not self.clip.events:
             return
 
-        start_idx = max(0, min(start_idx, len(self.notes_flat) - 1))
-        end_idx = max(0, min(end_idx, len(self.notes_flat) - 1))
-        if end_idx < start_idx:
-            start_idx, end_idx = end_idx, start_idx
+        n = len(self.notes_flat)
+        self.loop_start_index = max(0, min(start_idx, n - 1))
+        self.loop_end_index = max(self.loop_start_index, min(end_idx, n - 1))
 
-        self.loop_start_index = start_idx
-        self.loop_end_index = end_idx
+        # --- NEW: compute loop bounds in beats ---
+        evs = self.clip.events
+        # Guard in case of weird mismatches
+        if evs:
+            start_idx_clamped = max(0, min(self.loop_start_index, len(evs) - 1))
+            end_idx_clamped = max(0, min(self.loop_end_index, len(evs) - 1))
+
+            start_ev = evs[start_idx_clamped]
+            end_ev = evs[end_idx_clamped]
+
+            self.loop_start_beats = start_ev.start_beats
+            # loop end beat is end-note start + its duration
+            self.loop_end_beats = end_ev.start_beats + end_ev.duration_beats
+        else:
+            self.loop_start_beats = 0.0
+            self.loop_end_beats = 0.0
 
     def set_loop_enabled(self, enabled: bool) -> None:
         self.loop_enabled = enabled
@@ -111,11 +130,7 @@ class PlaybackController:
             return
 
         start_idx = max(0, min(self.loop_start_index, len(self.clip.events) - 1))
-        self._next_event_index = start_idx
-
-        start_beat = self.clip.events[start_idx].start_beats
-        self.transport.set_position_beats(start_beat)
-        self._last_processed_beats = None  # force a clean boundary
+        self._start_at_index(start_idx)
 
     # ------------------------------------------------------------------
     # Play / pause / stop
@@ -146,6 +161,7 @@ class PlaybackController:
             return
 
         index = max(0, min(index, len(self.clip.events) - 1))
+        print ("Start at index idx:", index)
         self._next_event_index = index
 
         start_beat = self.clip.events[index].start_beats
@@ -197,15 +213,32 @@ class PlaybackController:
         if self._last_processed_beats is None:
             self._last_processed_beats = current_beats
 
+        events = self.clip.events
+        n = len(events)
+
         # If time went backwards (manual reposition or loop wrap),
         # rescan to find the appropriate event index.
         if current_beats < self._last_processed_beats:
             self._next_event_index = self._find_event_index_for_beats(current_beats)
 
-        events = self.clip.events
-        n = len(events)
+        # Optional debug, but *only* if index is valid
+        if 0 <= self._next_event_index < n:
+            ev_debug = events[self._next_event_index]
+            print(
+                "tick: last=", self._last_processed_beats,
+                "current=", current_beats,
+                "next_idx=", self._next_event_index,
+                "ev_start=", ev_debug.start_beats,
+            )
+        else:
+            print(
+                "tick: last=", self._last_processed_beats,
+                "current=", current_beats,
+                "next_idx=", self._next_event_index,
+                "ev_start= <none>",
+            )
 
-        # Trigger events whose start is in (last, current]
+        # ---- Trigger events whose start is in (last, current] ----
         while self._next_event_index < n:
             ev = events[self._next_event_index]
             start = ev.start_beats
@@ -217,28 +250,23 @@ class PlaybackController:
             # Only trigger if it wasn't already passed on previous tick
             if start > self._last_processed_beats:
                 idx = self._next_event_index
-
-                # UI highlight (assumes MidiClip order == notes_flat order)
                 self.update_ui(idx, self.notes_flat)
-
-                # Convert beats duration to seconds using score tempo
                 duration_s = self._beats_to_seconds(ev.duration_beats)
                 self.audio.play_note(ev.pitch, duration_s, volume=0.25)
 
             self._next_event_index += 1
 
-            # Handle loop wrap based on indices
-            if self.loop_enabled and self._next_event_index > self.loop_end_index:
-                self._wrap_to_loop_start()
-                # After wrapping we break this tick; next process_tick
-                # will continue from new position.
-                self._last_processed_beats = self.transport.current_beats
-                return
-
+        # After processing events up to current_beats:
         self._last_processed_beats = current_beats
 
-        # If we hit the end and no loop, stop
-        if self._next_event_index >= n and not self.loop_enabled:
+        # If looping: wrap when transport passes loop_end_beats
+        if self.loop_enabled:
+            if current_beats >= self.loop_end_beats:
+                self._wrap_to_loop_start()
+                return
+
+        # If not looping: stop at end of clip
+        elif self._next_event_index >= n:
             self.is_playing = False
 
     def _beats_to_seconds(self, beats: float) -> float:
