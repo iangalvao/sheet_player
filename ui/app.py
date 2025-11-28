@@ -43,31 +43,38 @@ class App:
         self.root = tk.Tk()
         self.root.title("Flute Practice Prototype")
 
-        # Core state
+                # Core state
         self.score: Score = self._make_demo_score()
         self.project: Project | None = None
         self.main_track: Track | None = None
-        self.main_clip = None 
-                # After self.score and self.project are ready:
+        self.main_clip = None
+
+        # Core engine objects
         self.transport = Transport(
             tempo_bpm=self.score.tempo_bpm,
             time_signature=self.score.time_signature,
         )
         self.scheduler = Scheduler(self.transport)
-        # Keep the transport clock running; we use it as a global musical timeline.
-
         self.audio = AudioEngine()
         self.player: PlaybackController | None = None
         self.metronome: Metronome | None = None
+
         self.editor = EditorController(self.score)
 
 
         # Build project based on initial score
+
+        # Engine facade: now knows about transport/scheduler
+        self.session = Session(
+            score=self.score,
+            editor=self.editor,
+            transport=self.transport,
+            scheduler=self.scheduler,
+        )
+        # Inform session about the project
         self._build_project_from_score()
+        self.session.set_project(self.project)
 
-
-        # Editor state        
-        self.session = Session(self.score, self.editor)
         self.on_toggle_stick_to_bar = False
         # UI
         self.widgets: WidgetsType = Widgets(self.root, self)
@@ -102,6 +109,8 @@ class App:
         # Rebuild project/from score (main_clip etc.)
         self._build_project_from_score(self.score)
 
+        # Sync the session with the loaded project
+        self.session.set_project(self.project)
         # Editor + widgets
         self.editor.set_score(self.score)
         self.session.score = self.score
@@ -127,8 +136,6 @@ class App:
             self.session.score = self.score
             self.session.attach_player(self.player)
             self.session.initialize_loop_region()
-
-
         # UI selection & repaint
         self.editor.set_selection_index(0)
         self.update_ui(0)
@@ -157,6 +164,10 @@ class App:
         else:
             self.main_track = None
             self.main_clip = None
+            
+        # NEW: inform session (if it already exists)
+        if hasattr(self, "session"):
+            self.session.set_project(self.project)
 
     def _make_demo_score(self) -> Score:
         data = {
@@ -197,20 +208,23 @@ class App:
 
         # Player (beat-based)
         self.player = PlaybackController(
-            self.root,
             self.score,
             self.audio,
             self.transport,
-            self.main_clip,  # created in _build_project_from_score()
+            self.main_clip,
             self._player_update_callback,
         )
 
-        # NEW: connect player to the session and set default loop
+        # NEW: connect both to Session
+        self.session.attach_metronome(self.metronome)
         self.session.attach_player(self.player)
         self.session.initialize_loop_region()
 
         # Staff initial score
         self.widgets.set_score(self.editor.score)
+        
+        
+        
 
     # ====== Pitch and Beat helpers (diatonic, clamped) ==================
 
@@ -380,12 +394,8 @@ class App:
             return
 
         bpm = max(20, min(bpm, 300))
-        self.score.tempo_bpm = bpm
-
-        if self.metronome is not None:
-            self.metronome.set_tempo(bpm)
-        if self.transport is not None:
-            self.transport.set_tempo(bpm)
+        # Let the session propagate to score + transport + metronome
+        self.session.set_tempo(bpm)
 
     # ====== Transport controls =================================
    
@@ -401,21 +411,13 @@ class App:
         
         
     def _transport_tick(self) -> None:
-        import time
-
         now = time.perf_counter()
         last = getattr(self, "_last_transport_time", now)
         dt = now - last
         self._last_transport_time = now
 
-        if self.transport is not None:
-            self.transport.tick(dt)
-        if self.scheduler is not None:
-            self.scheduler.process()
-
-        # NEW: playback reacts to the transport clock
-        if self.player is not None:
-            self.player.process_tick()
+        # Now session owns the engine time progression
+        self.session.process_tick(dt)
 
         self.root.after(20, self._transport_tick)
 
@@ -484,38 +486,24 @@ class App:
     def _schedule_on_next_bar(self, callback: Callable[[], None]) -> None:
         """
         Call `callback` aligned so that it starts exactly on beat 1
-        of the next bar, aligned to the *metronome* clicks.
+        of the next bar, according to Session/metronome info.
 
-        If 'stick to next bar' is disabled, or if the metronome is off /
-        unavailable, call immediately.
+        If 'stick to next bar' is disabled or alignment info is unavailable,
+        call immediately.
         """
         # If stick-to-next-bar is off, just run now
         if not self._stick_to_next_bar_enabled():
             callback()
             return
 
-        # Need a running metronome to align to its clock
-        if self.metronome is None or not self.metronome.is_running:
-            callback()
-            return
-
-        beats_per_bar = self.score.time_signature[0]
-        if beats_per_bar <= 0:
-            callback()
-            return
-
-        current_beat, last_beat_time_ms = self.metronome.get_last_beat_info()
         now_ms = int(time.time() * 1000)
+        delay_ms = self.session.compute_next_bar_delay_ms(now_ms)
 
-        target_time_ms = compute_next_bar_start_time_ms(
-            tempo_bpm=self.score.tempo_bpm,
-            beats_per_bar=beats_per_bar,
-            current_beat_in_bar=current_beat,
-            last_beat_time_ms=last_beat_time_ms,
-            now_ms=now_ms,
-        )
+        if delay_ms is None:
+            # No reliable alignment info → run immediately
+            callback()
+            return
 
-        delay_ms = max(0, target_time_ms - now_ms)
         self.root.after(delay_ms, callback)
 
     # ====== Editing (selection + pitch) ========================

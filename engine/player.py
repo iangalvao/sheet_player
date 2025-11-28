@@ -18,42 +18,27 @@ class PlaybackController:
     - Triggers AudioEngine.play_note for events whose start_beats are reached.
     - Keeps a flat note list for UI highlighting, 1:1 with events.
     """
-
     def __init__(
         self,
-        root,
         score: Score,
         audio: AudioEngine,
         transport: Transport,
         clip: MidiClip,
         update_ui: Callable[[int, list], None],
-    ) -> None:
-        self.root = root
+    ):
         self.score = score
         self.audio = audio
         self.transport = transport
         self.clip = clip
         self.update_ui = update_ui
 
-        # Flat (measure_index, note_index, Note) list for UI
         self.notes_flat: List[Tuple[int, int, object]] = list(score.all_notes())
-
-        # Playback state
         self.is_playing: bool = False
-
-        # Loop in terms of indices (for now)
         self.loop_enabled: bool = False
         self.loop_start_index: int = 0
         self.loop_end_index: int = max(0, len(self.notes_flat) - 1)
         self.loop_start_beats = 0.0
-        self.loop_end_beats = (
-            self.clip.events[self.loop_end_index].start_beats
-            + self.clip.events[self.loop_end_index].duration_beats
-            if self.clip.events else 0.0
-        )
-
-
-        # Internal event pointer & time tracking
+        self.loop_end_beats = self._beats_for_index(self.loop_end_index)
         self._next_event_index: int = 0
         self._last_processed_beats: Optional[float] = None
 
@@ -161,7 +146,6 @@ class PlaybackController:
             return
 
         index = max(0, min(index, len(self.clip.events) - 1))
-        print ("Start at index idx:", index)
         self._next_event_index = index
 
         start_beat = self.clip.events[index].start_beats
@@ -196,6 +180,32 @@ class PlaybackController:
     # ------------------------------------------------------------------
     # Beat-based processing (called from App's transport loop)
     # ------------------------------------------------------------------
+    
+    def _beats_for_index(self, idx: int) -> float:
+        """
+        Return the absolute beat position for the note at flat index `idx`.
+        Example: idx = 0  → 0.0 beats (start of song)
+                 idx = 5  → sum of durations of notes 0..4
+
+        Safe for out-of-range: clamps idx into [0, len(notes_flat)-1].
+        """
+        if not self.notes_flat:
+            return 0.0
+
+        # Clamp index
+        if idx <= 0:
+            return 0.0
+        if idx >= len(self.notes_flat):
+            idx = len(self.notes_flat) - 1
+
+        total = 0.0
+        # accumulate durations of earlier notes
+        for i in range(idx):
+            _mi, _ni, note = self.notes_flat[i]
+            total += note.duration_beats
+
+        return total
+
     def process_tick(self) -> None:
         """
         Called regularly from App._transport_tick().
