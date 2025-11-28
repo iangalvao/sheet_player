@@ -316,6 +316,26 @@ class Session:
         )
         return new_idx
 
+    def sync_active_midi_clip_from_score(self) -> None:
+        """
+        Sync the pitches in the active MidiClip from the current Score/editor.
+
+        Assumes:
+          - editor._notes_flat and clip.events correspond 1:1 in order.
+        """
+        clip = self.get_active_midi_clip()
+        if clip is None:
+            return
+
+        flat = self.editor.get_flat_notes()
+        events = clip.events
+
+        n = min(len(flat), len(events))
+        for i in range(n):
+            _mi, _ni, note = flat[i]
+            events[i].pitch = note.pitch
+
+
     # --- interval selection -------------------------------------
 
     def select_interval_for_current_note(self) -> bool:

@@ -13,7 +13,7 @@ from engine.player import PlaybackController
 from engine.metronome import Metronome
 from ui.widgets import Widgets
 from domain.editor import EditorController
-from engine.timebase import beat_label_from_zero_based, compute_next_bar_start_time_ms
+from engine.timebase import beat_label_from_zero_based
 from engine.project import Project, Track
 from engine.transport import Transport, Scheduler
 from engine.io import load_project_or_score, save_project_to_json  # or adjust path
@@ -514,15 +514,27 @@ class App:
             self.update_ui(new_idx)
 
     def change_selected_pitch(self, delta_steps: int) -> None:
-        new_idx = self.session.transpose_selected(delta_steps)
+        if self.player is None or not self.player.notes_flat:
+            return
+
+        new_idx = self.editor.transpose_selected(
+            delta_steps,
+            transpose_pitch_func=transpose_pitch_diatonic,
+        )
+
         if new_idx is None:
             return
 
-        # Keep player + view in sync with the edited score
+        # 1) Sync UI score
         self.widgets.set_score(self.score)
-        if self.player is not None:
-            self.player.notes_flat = self.editor.get_flat_notes()
 
+        # 2) Sync playback's view of notes for UI highlighting
+        self.player.notes_flat = self.editor.get_flat_notes()
+
+        # 3) Sync active MidiClip events so AUDIO matches edited score
+        self.session.sync_active_midi_clip_from_score()
+
+        # 4) Update UI selection
         self.update_ui(new_idx)
 
     def on_key(self, event) -> None:

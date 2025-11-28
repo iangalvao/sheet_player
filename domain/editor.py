@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Callable, List, Tuple, Optional
 from engine.timebase import BeatTime
-from domain.score import Score
+from domain.score import Note, Score
 
 
 class EditorController:
@@ -20,7 +20,7 @@ class EditorController:
         self.score: Score = score
         self.selected_index: int = 0
         # (measure_idx, note_idx, Note)
-        self._notes_flat: List[Tuple[int, int, object]] = []
+        self._notes_flat: List[Tuple[int, int, Note]] = []
         self._rebuild_flat()
 
         # Selection mode: "note" or "interval"
@@ -44,7 +44,7 @@ class EditorController:
         self._selection_interval = None
         self._rebuild_flat()
 
-    def get_flat_notes(self) -> List[Tuple[int, int, object]]:
+    def get_flat_notes(self) -> List[Tuple[int, int, Note]]:
         """Return the current flattened notes."""
         return self._notes_flat
 
