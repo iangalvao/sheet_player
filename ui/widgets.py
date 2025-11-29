@@ -1,9 +1,7 @@
-# widgets.py
 from __future__ import annotations
 
 import tkinter as tk
 from typing import TYPE_CHECKING
-
 
 from ui.staff_view import StaffView
 from domain.score import Score
@@ -46,7 +44,12 @@ class Widgets:
 
         tk.Label(metro_frame, text="Metronome:").pack(side=tk.LEFT)
 
-        self.metro_canvas = tk.Canvas(metro_frame, width=24, height=24, highlightthickness=0)
+        self.metro_canvas = tk.Canvas(
+            metro_frame,
+            width=24,
+            height=24,
+            highlightthickness=0,
+        )
         self.metro_canvas.pack(side=tk.LEFT, padx=5)
         self._beat_circle = self.metro_canvas.create_oval(
             4, 4, 20, 20, fill="grey", outline="black"
@@ -93,13 +96,13 @@ class Widgets:
             side=tk.LEFT, padx=5
         )
 
-        # Stick-to-next-bar option
+        # Stick-to-next-bar option:
+        # App reads this via _stick_to_next_bar_enabled(); no callback needed here.
         self.stick_to_bar_var = tk.BooleanVar(value=False)
         tk.Checkbutton(
             controls,
             text="Stick to next bar",
             variable=self.stick_to_bar_var,
-            command=self.app.on_toggle_stick_to_bar,
         ).pack(side=tk.LEFT, padx=10)
 
         # Loop toggle
@@ -110,7 +113,6 @@ class Widgets:
             variable=self.loop_var,
             command=self.app.on_toggle_loop,
         ).pack(side=tk.LEFT, padx=10)
-
 
         # === Status bar ===
         self.status_var = tk.StringVar(value="Ready")
@@ -133,15 +135,20 @@ class Widgets:
         self.note_label.config(text=text)
 
     def highlight_note(self, index: int) -> None:
-        # ScoreView already handles out-of-range gracefully (we used -1 in App)
+        # StaffView already handles out-of-range gracefully (we used -1 in App)
         self.staff_view.highlight_note(index)
 
     def set_status(self, text: str) -> None:
         self.status_var.set(text)
-        
-    def set_selection_region(self, measure_index: int, beat_start: float, beat_end: float) -> None:
+
+    def set_selection_region(
+        self,
+        measure_index: int,
+        beat_start: float,
+        beat_end: float,
+    ) -> None:
         """
-        Optional hook for a visual overlay on the staff.
+        Hook for a visual overlay on the staff.
         Only calls through if StaffView implements set_selection_region.
         """
         if hasattr(self.staff_view, "set_selection_region"):
