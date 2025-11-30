@@ -80,6 +80,9 @@ class StaffView(tk.Canvas):
 
         # Visual style (can be swapped later)
         self.style = StyleConfig()
+        # Horizontal layout & scrolling
+        self.px_per_beat: float = 40.0   # tune later
+        self._content_width: int = width  # total logical width of the score
 
     # ===== External API ========================================
 
@@ -136,6 +139,57 @@ class StaffView(tk.Canvas):
         self._redraw()
 
     # ===== Internal helpers ====================================
+    
+    def scroll_to_note(self, index: int, margin: float = 80.0) -> None:
+        """
+        Ensure the note at `index` is visible within the horizontal viewport.
+        Keeps a margin from the edges when possible.
+        """
+        if index < 0 or index >= len(self.note_positions):
+            return
+
+        content_width = max(self._content_width, 1)
+        visible_width = int(self["width"])
+
+        if visible_width >= content_width:
+            # Everything fits; nothing to scroll
+            return
+
+        x, _ = self.note_positions[index]
+
+        first_frac, last_frac = self.xview()
+        first_x = first_frac * content_width
+        last_x = last_frac * content_width
+
+        # If within [first+margin, last-margin], keep as is
+        if first_x + margin <= x <= last_x - margin:
+            return
+
+        # Otherwise, try to center the note
+        new_first_x = x - visible_width / 2.0
+        new_first_x = max(0.0, min(new_first_x, content_width - visible_width))
+        new_first_frac = new_first_x / content_width
+        self.xview_moveto(new_first_frac)
+
+
+    def _compute_staff_geometry(self) -> Tuple[int, int, float, float, float]:
+        """
+        Compute and cache staff geometry for the *visible* area:
+        width, height, line spacing, top line, bottom line, and middle line y.
+        """
+        width = int(self["width"])      # visible width (clip)
+        height = int(self["height"])
+
+        staff_height = height - self.top_margin - self.bottom_margin
+        line_spacing = staff_height / 4.0  # 4 gaps between 5 lines
+        top_line_y = self.top_margin
+        bottom_line_y = top_line_y + 4 * line_spacing
+
+        self._line_spacing = line_spacing
+        self._middle_line_y = top_line_y + 2 * line_spacing  # 3rd (middle) line
+
+        return width, height, top_line_y, bottom_line_y, line_spacing
+
 
     def _pitch_to_staff_step(self, pitch: str) -> int:
         """
@@ -180,32 +234,36 @@ class StaffView(tk.Canvas):
         self._note_measure_index = []
         self._note_duration_beats = []
         self._note_step = []
-
+        
         width, height, top_line_y, _, line_spacing = self._compute_staff_geometry()
         half_step = line_spacing / 2.0
         middle_line_y = self._middle_line_y
 
-        # --- Preferred path: NotatedScore ---
+        # Reset content width for recompute; we'll update it below
+        self._content_width = width  # fallback
+
+               # --- Preferred path: NotatedScore ---
         if self._notated_score is not None:
             nscore = self._notated_score
             measures = nscore.measures
             if not measures:
                 return
 
-            usable_width = width - self.left_margin - self.right_margin
             num_measures = len(measures)
-            if num_measures <= 0:
-                return
+            beats_per_bar = (
+                self.score.time_signature[0]
+                if self.score and self.score.time_signature
+                else 4
+            )
+            if beats_per_bar <= 0:
+                beats_per_bar = 4
 
-            measure_width = usable_width / num_measures
+            measure_width = beats_per_bar * self.px_per_beat
 
+            content_x = self.left_margin
             for m in measures:
                 measure_index = m.index
-                measure_start_x = self.left_margin + measure_index * measure_width
-
-                beats_per_bar = m.time_signature[0] if m.time_signature else 4
-                if beats_per_bar <= 0:
-                    beats_per_bar = 4
+                measure_start_x = content_x
 
                 for atom in m.atoms:
                     beat_start = atom.beat_start.to_float()
@@ -214,10 +272,8 @@ class StaffView(tk.Canvas):
                     )
                     center_beat = beat_start + dur_beats / 2.0
 
-                    t = 0.0
-                    if beats_per_bar > 0:
-                        t = min(max(center_beat / float(beats_per_bar), 0.0), 1.0)
-
+                    # 0..beats_per_bar → 0..1 within measure
+                    t = min(max(center_beat / float(beats_per_bar), 0.0), 1.0)
                     x = measure_start_x + t * measure_width
 
                     step = self._pitch_to_staff_step(atom.pitch)
@@ -229,8 +285,14 @@ class StaffView(tk.Canvas):
                     self._note_duration_beats.append(dur_beats)
                     self._note_step.append(step)
 
+                content_x += measure_width
+
+            self._content_width = int(content_x + self.right_margin)
+            # scrolling region is in canvas coords: [0, 0, content_width, height]
+            self.config(scrollregion=(0, 0, self._content_width, height))
             return  # done
 
+        # --- Fallback: old Score-based layout ---
         # --- Fallback: old Score-based layout ---
         if self.score is None:
             return
@@ -239,25 +301,21 @@ class StaffView(tk.Canvas):
         if not measures:
             return
 
-        usable_width = width - self.left_margin - self.right_margin
         num_measures = len(measures)
-        if num_measures <= 0:
-            return
-
-        measure_width = usable_width / num_measures
-
         beats_per_bar = self.score.time_signature[0] if self.score.time_signature else 4
+        if beats_per_bar <= 0:
+            beats_per_bar = 4
 
+        measure_width = beats_per_bar * self.px_per_beat
+
+        content_x = self.left_margin
         for mi, measure in enumerate(measures):
-            measure_start_x = self.left_margin + mi * measure_width
+            measure_start_x = content_x
 
             beat_pos = 0.0
             for note in measure.notes:
                 center_beat = beat_pos + note.duration_beats / 2.0
-                if beats_per_bar > 0:
-                    t = min(max(center_beat / beats_per_bar, 0.0), 1.0)
-                else:
-                    t = 0.0
+                t = min(max(center_beat / beats_per_bar, 0.0), 1.0)
                 x = measure_start_x + t * measure_width
 
                 step = self._pitch_to_staff_step(note.pitch)
@@ -271,6 +329,11 @@ class StaffView(tk.Canvas):
 
                 beat_pos += note.duration_beats
 
+            content_x += measure_width
+
+        self._content_width = int(content_x + self.right_margin)
+        self.config(scrollregion=(0, 0, self._content_width, height))
+
     def _redraw(self) -> None:
         self.delete("all")
         self._draw_staff()
@@ -279,11 +342,12 @@ class StaffView(tk.Canvas):
 
     def _draw_staff(self) -> None:
         """Draw the 5 staff lines + barlines + beat grid."""
-        width, height, top_line_y, bottom_line_y, line_spacing = (
-            *self._compute_staff_geometry(),
-        )
-
+        width, height, top_line_y, bottom_line_y, line_spacing = self._compute_staff_geometry()
         cfg = self.style
+
+        # Use content width if it's larger than visible width
+        content_width = max(self._content_width, width)
+        usable_width = content_width - self.left_margin - self.right_margin
 
         # --- horizontal staff lines ---
         for i in range(5):
@@ -291,27 +355,27 @@ class StaffView(tk.Canvas):
             self.create_line(
                 self.left_margin,
                 y,
-                width - self.right_margin,
+                content_width - self.right_margin,
                 y,
                 fill=cfg.staff_line_color,
                 width=cfg.staff_line_width,
             )
 
-        # --- barlines + beat grid (if we have a score) ---
         if self.score is None or not self.score.measures:
             return
 
         measures = self.score.measures
         num_measures = len(measures)
-
-        usable_width = width - self.left_margin - self.right_margin
         if num_measures <= 0:
             return
-        measure_width = usable_width / num_measures
 
         beats_per_bar = self.score.time_signature[0] if self.score.time_signature else 4
+        if beats_per_bar <= 0:
+            beats_per_bar = 4
 
-        # Draw barlines (between measures and at the end)
+        measure_width = beats_per_bar * self.px_per_beat
+
+        # Draw barlines
         for mi in range(num_measures + 1):
             x_bar = self.left_margin + mi * measure_width
             self.create_line(
@@ -323,7 +387,7 @@ class StaffView(tk.Canvas):
                 width=cfg.barline_width,
             )
 
-        # Draw light beat grid inside each measure
+        # Draw light beat grid
         if beats_per_bar > 0:
             for mi in range(num_measures):
                 measure_start_x = self.left_margin + mi * measure_width
@@ -341,9 +405,6 @@ class StaffView(tk.Canvas):
                     )
 
     def _draw_selection_overlay(self) -> None:
-        """
-        Draw a light rectangle showing the selected beat range in a measure.
-        """
         if self.score is None or self.selection_region is None:
             return
         measures = self.score.measures
@@ -356,17 +417,12 @@ class StaffView(tk.Canvas):
 
         width = int(self["width"])
         height = int(self["height"])
-        usable_width = width - self.left_margin - self.right_margin
-        num_measures = len(measures)
-        if num_measures <= 0:
-            return
-
-        measure_width = usable_width / num_measures
-        measure_start_x = self.left_margin + measure_index * measure_width
-
         beats_per_bar = self.score.time_signature[0] if self.score.time_signature else 4
         if beats_per_bar <= 0:
             return
+
+        measure_width = beats_per_bar * self.px_per_beat
+        measure_start_x = self.left_margin + measure_index * measure_width
 
         bs = max(0.0, beat_start)
         be = max(bs, beat_end)

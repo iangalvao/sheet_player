@@ -32,9 +32,21 @@ class Widgets:
         root.config(menu=menubar)
 
         # === Staff view + note label ===
-        self.staff_view = StaffView(root, width=800, height=160)
-        self.staff_view.pack(pady=5)
+        # === Staff view + horizontal scroll ===
+        staff_frame = tk.Frame(root)
+        staff_frame.pack(pady=5, fill="x", expand=False)
+
+        self.staff_hbar = tk.Scrollbar(staff_frame, orient=tk.HORIZONTAL)
+        self.staff_hbar.pack(side=tk.BOTTOM, fill=tk.X)
+
+        self.staff_view = StaffView(staff_frame, width=800, height=160)
+        self.staff_view.pack(side=tk.TOP, fill="x", expand=False)
+
+        self.staff_view.config(xscrollcommand=self.staff_hbar.set)
+        self.staff_hbar.config(command=self.staff_view.xview)
+
         self.staff_view.set_score(app.score)
+
         self.note_label = tk.Label(root, font=("Arial", 24))
         self.note_label.pack(pady=10)
 
@@ -154,3 +166,10 @@ class Widgets:
         if hasattr(self.staff_view, "set_selection_region"):
             self.staff_view.set_selection_region(measure_index, beat_start, beat_end)
             
+    def scroll_to_note_index(self, index: int) -> None:
+        """
+        Let App request horizontal scrolling so that a given note index
+        stays in view.
+        """
+        if hasattr(self.staff_view, "scroll_to_note"):
+            self.staff_view.scroll_to_note(index)

@@ -204,6 +204,35 @@ class App:
                         {"pitch": "F5", "duration_beats": 4.0}
                     ]
                 },
+                           {
+                    "notes": [
+                        {"pitch": "G4", "duration_beats": 0.25},
+                        {"pitch": "F4", "duration_beats": 0.25},
+                        {"pitch": "F4", "duration_beats": 0.25},
+                        {"pitch": "E4", "duration_beats": 0.25},
+                        {"pitch": "C5", "duration_beats": 1.0},
+                        {"pitch": "D5", "duration_beats": 2.0},
+                    ]
+                },
+                {
+                    "notes": [
+                        {"pitch": "F5", "duration_beats": 4.0}
+                    ]
+                },
+                                {
+                    "notes": [
+                        {"pitch": "G4", "duration_beats": 0.25},
+                        {"pitch": "F4", "duration_beats": 0.25},
+                        {"pitch": "E4", "duration_beats": 0.25},
+                        {"pitch": "C5", "duration_beats": 1.0},
+                        {"pitch": "D5", "duration_beats": 2.0},
+                    ]
+                },
+                {
+                    "notes": [
+                        {"pitch": "F5", "duration_beats": 4.0}
+                    ]
+                },
             ],
         }
         return Score.from_dict(data)
@@ -322,6 +351,7 @@ class App:
             parts.append(f"[{note.pitch}]" if i == idx else note.pitch)
         self.widgets.set_note_list(" ".join(parts))
         self.widgets.highlight_note(idx)
+        self.widgets.scroll_to_note_index(idx)
         self._update_status_from_index(idx)
 
     # ====== Menu / file actions ================================
