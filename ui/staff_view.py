@@ -1,19 +1,22 @@
-# ui/staff_view.py
 from __future__ import annotations
 
 import tkinter as tk
-from typing import List, Tuple, Optional
+from typing import TYPE_CHECKING, List, Tuple, Optional
 
 from domain.score import Score
 from domain.theory import pitch_to_diatonic_index
 
+
+if TYPE_CHECKING:
+    from domain.notation import NotatedScore
 class StaffView(tk.Canvas):
     """
     Simple staff renderer:
 
     - 5 horizontal lines.
-    - Notes drawn as circles based on pitch and time.
-    - highlight_note(index) highlights a single note.
+    - Notes drawn as circles based on pitch and (local) time in the measure.
+    - highlight_note(index) highlights a single note by flat index
+      (same order as score.all_notes()).
     - set_selection_region(measure_index, beat_start, beat_end) draws
       a translucent rectangle over the selected beat range in that measure.
     """
@@ -52,10 +55,24 @@ class StaffView(tk.Canvas):
         self._redraw()
 
     def highlight_note(self, index: int) -> None:
-        self.highlight_index = index
+        """
+        Highlight the note at flat index `index` (same order as Score.all_notes()).
+        If index is out of range, clears the highlight.
+        """
+        if self.score is None or not self.note_positions:
+            self.highlight_index = -1
+        elif index < 0 or index >= len(self.note_positions):
+            self.highlight_index = -1
+        else:
+            self.highlight_index = index
         self._redraw()
 
-    def set_selection_region(self, measure_index: int, beat_start: float, beat_end: float) -> None:
+    def set_selection_region(
+        self,
+        measure_index: int,
+        beat_start: float,
+        beat_end: float,
+    ) -> None:
         """
         Called by Widgets / App to visualize the selected time interval
         within a given measure.
@@ -77,6 +94,8 @@ class StaffView(tk.Canvas):
     def _recompute_note_positions(self) -> None:
         """
         Build self.note_positions: (x, y) for each note in score.all_notes().
+        Horizontal position is proportional to beat position within its measure.
+        Vertical position is based on pitch relative to B4.
         """
         self.note_positions = []
         if self.score is None:
@@ -99,7 +118,7 @@ class StaffView(tk.Canvas):
         # Vertical layout: 5 lines, centered
         staff_height = height - self.top_margin - self.bottom_margin
 
-        # IMPORTANT: same spacing as _draw_staff
+        # IMPORTANT: must match _draw_staff()
         line_spacing = staff_height / 4.0          # distance between staff lines
         half_step = line_spacing / 2.0             # one diatonic step (line or space)
 
@@ -136,7 +155,7 @@ class StaffView(tk.Canvas):
         self._draw_notes()
 
     def _draw_staff(self) -> None:
-        """Draw the 5 staff lines."""
+        """Draw the 5 staff lines + barlines + beat grid."""
         width = int(self["width"])
         height = int(self["height"])
 
@@ -144,6 +163,9 @@ class StaffView(tk.Canvas):
         # 4 spaces -> 5 lines => 4 gaps; so line_spacing * 4 = staff_height
         line_spacing = staff_height / 4.0
         top_line_y = self.top_margin
+        bottom_line_y = top_line_y + 4 * line_spacing
+
+        # --- horizontal staff lines ---
         for i in range(5):
             y = top_line_y + i * line_spacing
             self.create_line(
@@ -154,6 +176,49 @@ class StaffView(tk.Canvas):
                 fill="black",
                 width=1.2,
             )
+
+        # --- barlines + beat grid (if we have a score) ---
+        if self.score is None or not self.score.measures:
+            return
+
+        measures = self.score.measures
+        num_measures = len(measures)
+
+        usable_width = width - self.left_margin - self.right_margin
+        if num_measures <= 0:
+            return
+        measure_width = usable_width / num_measures
+
+        beats_per_bar = self.score.time_signature[0] if self.score.time_signature else 4
+
+        # Draw barlines (between measures and at the end)
+        for mi in range(num_measures + 1):
+            x_bar = self.left_margin + mi * measure_width
+            self.create_line(
+                x_bar,
+                top_line_y,
+                x_bar,
+                bottom_line_y,
+                fill="#444444",
+                width=1.2,
+            )
+
+        # Draw light beat grid inside each measure
+        if beats_per_bar > 0:
+            for mi in range(num_measures):
+                measure_start_x = self.left_margin + mi * measure_width
+                for b in range(1, beats_per_bar):
+                    t = b / beats_per_bar
+                    x = measure_start_x + t * measure_width
+                    self.create_line(
+                        x,
+                        top_line_y,
+                        x,
+                        bottom_line_y,
+                        fill="#dddddd",
+                        width=1.0,
+                        dash=(2, 4),
+                    )
 
     def _draw_selection_overlay(self) -> None:
         """
@@ -210,26 +275,110 @@ class StaffView(tk.Canvas):
             fill="#ffd8d8",  # light pink
             outline="",
         )
+        
+        
+    def _draw_note(
+        self,
+        x: float,
+        y: float,
+        *,
+        middle_line_y: float,
+        line_spacing: float,
+        highlight: bool = False,
+        note_index: int | None = None,
+    ) -> None:
+        """
+        Draw a single note head + stem at (x, y).
+
+        Parameters
+        ----------
+        x, y:
+            Center position of the note head (in canvas coordinates).
+        middle_line_y:
+            Y coordinate of the middle staff line (B4 reference).
+        line_spacing:
+            Vertical distance between adjacent staff lines.
+        highlight:
+            If True, draw the note head in "selected" style.
+        note_index:
+            Optional index in the flattened note list (for future use:
+            duration, pitch-dependent styling, etc.).
+        """
+        note_radius_x = 6
+        note_radius_y = 4
+
+        # Decide stem direction:
+        # - if the note is below the middle line (bigger y) → stem up
+        # - if above the middle line → stem down
+        stem_length = line_spacing * 3
+
+        if y > middle_line_y:
+            # stem up: start at right side of the head, go upwards
+            stem_x = x + note_radius_x
+            stem_y0 = y
+            stem_y1 = y - stem_length
+        else:
+            # stem down: start at left side of the head, go downwards
+            stem_x = x - note_radius_x
+            stem_y0 = y
+            stem_y1 = y + stem_length
+
+        # Draw stem
+        self.create_line(
+            stem_x,
+            stem_y0,
+            stem_x,
+            stem_y1,
+            fill="black",
+            width=1.2,
+        )
+
+        # Draw note head
+        fill = "deepskyblue" if highlight else "white"
+        outline = "black"
+
+        self.create_oval(
+            x - note_radius_x,
+            y - note_radius_y,
+            x + note_radius_x,
+            y + note_radius_y,
+            fill=fill,
+            outline=outline,
+            width=1.2,
+        )
 
     def _draw_notes(self) -> None:
         if self.score is None or not self.note_positions:
             return
 
-        # Vertical helper so notes appear on top of staff
-        note_radius_x = 6
-        note_radius_y = 4
+        width = int(self["width"])
+        height = int(self["height"])
+
+        staff_height = height - self.top_margin - self.bottom_margin
+        line_spacing = staff_height / 4.0       # same as in _draw_staff
+        top_line_y = self.top_margin
+        middle_line_y = top_line_y + 2 * line_spacing
 
         for idx, (x, y) in enumerate(self.note_positions):
             highlight = (idx == self.highlight_index)
-            fill = "deepskyblue" if highlight else "white"
-            outline = "black"
 
-            self.create_oval(
-                x - note_radius_x,
-                y - note_radius_y,
-                x + note_radius_x,
-                y + note_radius_y,
-                fill=fill,
-                outline=outline,
-                width=1.2,
+            self._draw_note(
+                x=x,
+                y=y,
+                middle_line_y=middle_line_y,
+                line_spacing=line_spacing,
+                highlight=highlight,
+                note_index=idx,
             )
+
+    def set_notated_score(self, nscore: "NotatedScore") -> None:
+        """
+        Placeholder: accept a NotatedScore but ignore it for now.
+
+        Later we'll migrate _recompute_note_positions to use this
+        instead of raw Score.
+        """
+        # For now we just keep the existing behavior (derive from self.score).
+        # When we switch, we might store `self.notated_score = nscore`
+        # and recompute positions from it.
+        pass
