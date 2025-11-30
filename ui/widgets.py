@@ -8,6 +8,7 @@ from domain.score import Score
 
 if TYPE_CHECKING:
     from app import App
+    from domain.notation import NotatedScore
 
 
 class Widgets:
@@ -34,7 +35,6 @@ class Widgets:
         self.staff_view = StaffView(root, width=800, height=160)
         self.staff_view.pack(pady=5)
         self.staff_view.set_score(app.score)
-
         self.note_label = tk.Label(root, font=("Arial", 24))
         self.note_label.pack(pady=10)
 
@@ -153,3 +153,4 @@ class Widgets:
         """
         if hasattr(self.staff_view, "set_selection_region"):
             self.staff_view.set_selection_region(measure_index, beat_start, beat_end)
+            

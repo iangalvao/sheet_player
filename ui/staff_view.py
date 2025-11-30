@@ -1,20 +1,41 @@
+# ui/staff_view.py
 from __future__ import annotations
 
 import tkinter as tk
-from typing import TYPE_CHECKING, List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
 
 from domain.score import Score
 from domain.theory import pitch_to_diatonic_index
+from domain.notation import (
+    NotatedScore,
+    NotatedAtom,
+    notated_duration_to_beats,
+    build_notated_score,
+)
+
+from notation.style_config import StyleConfig
+from notation.formatting import (
+    duration_kind_from_beats,
+    is_filled_notehead,
+    is_beamable,
+    beams_for_kind,
+)
+from notation.drawing import (
+    NoteDrawingContext,
+    draw_notehead,
+    draw_stem,
+    draw_beam_group,
+    StemDirection,
+)
 
 
-if TYPE_CHECKING:
-    from domain.notation import NotatedScore
 class StaffView(tk.Canvas):
     """
     Simple staff renderer:
 
     - 5 horizontal lines.
-    - Notes drawn as circles based on pitch and (local) time in the measure.
+    - Notes drawn with basic sheet-music-like features:
+      stems, filled/hollow heads, simple beams.
     - highlight_note(index) highlights a single note by flat index
       (same order as score.all_notes()).
     - set_selection_region(measure_index, beat_start, beat_end) draws
@@ -23,32 +44,63 @@ class StaffView(tk.Canvas):
 
     def __init__(self, master, width: int = 800, height: int = 160, **kwargs):
         super().__init__(master, width=width, height=height, bg="white", **kwargs)
+
+        # External source of truth
         self.score: Optional[Score] = None
 
-        # Flattened note positions: one per note in score.all_notes() order
+        # INTERNAL: derived from score for layout and notation
+        self._notated_score: Optional[NotatedScore] = None
+
+        # Flattened note visuals: parallel arrays, one entry per visual note
         self.note_positions: List[Tuple[float, float]] = []
+        self.note_atoms: List[Optional[NotatedAtom]] = []
 
-        # Index of currently highlighted note in note_positions (or -1 for none)
+        # Additional per-note metadata to support stems and beams
+        self._note_measure_index: List[int] = []
+        self._note_duration_beats: List[float] = []
+        self._note_step: List[int] = []  # diatonic steps relative to B4
+
+        # Interaction state
         self.highlight_index: int = -1
-
-        # Selection region for overlay: (measure_index, beat_start, beat_end)
         self.selection_region: Optional[Tuple[int, float, float]] = None
 
-        # Layout parameters
+        # Layout margins
         self.left_margin = 40
         self.right_margin = 20
         self.top_margin = 20
         self.bottom_margin = 20
 
-        # Pitch mapping reference
+        # Pitch/staff mapping
         self._letter_order = ["C", "D", "E", "F", "G", "A", "B"]
-        # We'll treat B4 as the middle staff line (step = 0)
-        self._ref_pitch = "B4"
+        self._ref_pitch = "B4"  # middle staff line
+
+        # Staff geometry cache (computed on each redraw)
+        self._line_spacing: float = 0.0
+        self._middle_line_y: float = 0.0
+
+        # Visual style (can be swapped later)
+        self.style = StyleConfig()
 
     # ===== External API ========================================
 
     def set_score(self, score: Score) -> None:
+        """
+        External entry point: Score is the only source of truth.
+        StaffView builds its own NotatedScore internally.
+        """
         self.score = score
+        self._notated_score = build_notated_score(score)
+        self.highlight_index = -1
+        self.selection_region = None
+        self._recompute_note_positions()
+        self._redraw()
+
+    def set_notated_score(self, nscore: NotatedScore) -> None:
+        """
+        Main entry point for sheet layout: uses NotatedScore to derive
+        positions and (later) stems, beams, etc.
+        """
+        self._notated_score = nscore
         self.highlight_index = -1
         self.selection_region = None
         self._recompute_note_positions()
@@ -59,7 +111,10 @@ class StaffView(tk.Canvas):
         Highlight the note at flat index `index` (same order as Score.all_notes()).
         If index is out of range, clears the highlight.
         """
-        if self.score is None or not self.note_positions:
+        if (
+            self.score is None
+            and self._notated_score is None
+        ) or not self.note_positions:
             self.highlight_index = -1
         elif index < 0 or index >= len(self.note_positions):
             self.highlight_index = -1
@@ -91,22 +146,98 @@ class StaffView(tk.Canvas):
         ref_idx = pitch_to_diatonic_index(self._ref_pitch)
         return idx - ref_idx
 
+    def _compute_staff_geometry(self) -> Tuple[int, int, float, float, float]:
+        """
+        Compute and cache staff geometry: width, height, line spacing,
+        top line, bottom line, and middle line y.
+        """
+        width = int(self["width"])
+        height = int(self["height"])
+
+        staff_height = height - self.top_margin - self.bottom_margin
+        line_spacing = staff_height / 4.0  # 4 gaps between 5 lines
+        top_line_y = self.top_margin
+        bottom_line_y = top_line_y + 4 * line_spacing
+
+        self._line_spacing = line_spacing
+        self._middle_line_y = top_line_y + 2 * line_spacing  # 3rd (middle) line
+
+        return width, height, top_line_y, bottom_line_y, line_spacing
+
     def _recompute_note_positions(self) -> None:
         """
-        Build self.note_positions: (x, y) for each note in score.all_notes().
-        Horizontal position is proportional to beat position within its measure.
-        Vertical position is based on pitch relative to B4.
+        Build:
+            self.note_positions: (x, y) for each visual atom
+            self.note_atoms:     corresponding NotatedAtom (or None)
+            self._note_measure_index
+            self._note_duration_beats
+            self._note_step
+        Preferred: use internal _notated_score.
+        Fallback: derive from raw Score if needed.
         """
         self.note_positions = []
+        self.note_atoms = []
+        self._note_measure_index = []
+        self._note_duration_beats = []
+        self._note_step = []
+
+        width, height, top_line_y, _, line_spacing = self._compute_staff_geometry()
+        half_step = line_spacing / 2.0
+        middle_line_y = self._middle_line_y
+
+        # --- Preferred path: NotatedScore ---
+        if self._notated_score is not None:
+            nscore = self._notated_score
+            measures = nscore.measures
+            if not measures:
+                return
+
+            usable_width = width - self.left_margin - self.right_margin
+            num_measures = len(measures)
+            if num_measures <= 0:
+                return
+
+            measure_width = usable_width / num_measures
+
+            for m in measures:
+                measure_index = m.index
+                measure_start_x = self.left_margin + measure_index * measure_width
+
+                beats_per_bar = m.time_signature[0] if m.time_signature else 4
+                if beats_per_bar <= 0:
+                    beats_per_bar = 4
+
+                for atom in m.atoms:
+                    beat_start = atom.beat_start.to_float()
+                    dur_beats = notated_duration_to_beats(
+                        atom.duration, m.time_signature
+                    )
+                    center_beat = beat_start + dur_beats / 2.0
+
+                    t = 0.0
+                    if beats_per_bar > 0:
+                        t = min(max(center_beat / float(beats_per_bar), 0.0), 1.0)
+
+                    x = measure_start_x + t * measure_width
+
+                    step = self._pitch_to_staff_step(atom.pitch)
+                    y = middle_line_y - step * half_step
+
+                    self.note_positions.append((x, y))
+                    self.note_atoms.append(atom)
+                    self._note_measure_index.append(measure_index)
+                    self._note_duration_beats.append(dur_beats)
+                    self._note_step.append(step)
+
+            return  # done
+
+        # --- Fallback: old Score-based layout ---
         if self.score is None:
             return
 
         measures = self.score.measures
         if not measures:
             return
-
-        width = int(self["width"])
-        height = int(self["height"])
 
         usable_width = width - self.left_margin - self.right_margin
         num_measures = len(measures)
@@ -115,25 +246,13 @@ class StaffView(tk.Canvas):
 
         measure_width = usable_width / num_measures
 
-        # Vertical layout: 5 lines, centered
-        staff_height = height - self.top_margin - self.bottom_margin
-
-        # IMPORTANT: must match _draw_staff()
-        line_spacing = staff_height / 4.0          # distance between staff lines
-        half_step = line_spacing / 2.0             # one diatonic step (line or space)
-
-        # Middle line (line 3) is 2 * line_spacing below top line
-        middle_line_y = self.top_margin + 2 * line_spacing
-
-        # Time mapping: use beats within each measure
         beats_per_bar = self.score.time_signature[0] if self.score.time_signature else 4
 
         for mi, measure in enumerate(measures):
             measure_start_x = self.left_margin + mi * measure_width
 
             beat_pos = 0.0
-            for ni, note in enumerate(measure.notes):
-                # Horizontal: center by beat
+            for note in measure.notes:
                 center_beat = beat_pos + note.duration_beats / 2.0
                 if beats_per_bar > 0:
                     t = min(max(center_beat / beats_per_bar, 0.0), 1.0)
@@ -141,11 +260,15 @@ class StaffView(tk.Canvas):
                     t = 0.0
                 x = measure_start_x + t * measure_width
 
-                # Vertical: pitch -> staff steps (each step is a line or space)
                 step = self._pitch_to_staff_step(note.pitch)
                 y = middle_line_y - step * half_step
 
                 self.note_positions.append((x, y))
+                self.note_atoms.append(None)
+                self._note_measure_index.append(mi)
+                self._note_duration_beats.append(note.duration_beats)
+                self._note_step.append(step)
+
                 beat_pos += note.duration_beats
 
     def _redraw(self) -> None:
@@ -156,14 +279,11 @@ class StaffView(tk.Canvas):
 
     def _draw_staff(self) -> None:
         """Draw the 5 staff lines + barlines + beat grid."""
-        width = int(self["width"])
-        height = int(self["height"])
+        width, height, top_line_y, bottom_line_y, line_spacing = (
+            *self._compute_staff_geometry(),
+        )
 
-        staff_height = height - self.top_margin - self.bottom_margin
-        # 4 spaces -> 5 lines => 4 gaps; so line_spacing * 4 = staff_height
-        line_spacing = staff_height / 4.0
-        top_line_y = self.top_margin
-        bottom_line_y = top_line_y + 4 * line_spacing
+        cfg = self.style
 
         # --- horizontal staff lines ---
         for i in range(5):
@@ -173,8 +293,8 @@ class StaffView(tk.Canvas):
                 y,
                 width - self.right_margin,
                 y,
-                fill="black",
-                width=1.2,
+                fill=cfg.staff_line_color,
+                width=cfg.staff_line_width,
             )
 
         # --- barlines + beat grid (if we have a score) ---
@@ -199,8 +319,8 @@ class StaffView(tk.Canvas):
                 top_line_y,
                 x_bar,
                 bottom_line_y,
-                fill="#444444",
-                width=1.2,
+                fill=cfg.barline_color,
+                width=cfg.barline_width,
             )
 
         # Draw light beat grid inside each measure
@@ -215,8 +335,8 @@ class StaffView(tk.Canvas):
                         top_line_y,
                         x,
                         bottom_line_y,
-                        fill="#dddddd",
-                        width=1.0,
+                        fill=cfg.beat_grid_color,
+                        width=cfg.beat_grid_width,
                         dash=(2, 4),
                     )
 
@@ -226,7 +346,6 @@ class StaffView(tk.Canvas):
         """
         if self.score is None or self.selection_region is None:
             return
-
         measures = self.score.measures
         if not measures:
             return
@@ -249,7 +368,6 @@ class StaffView(tk.Canvas):
         if beats_per_bar <= 0:
             return
 
-        # Clamp beat range
         bs = max(0.0, beat_start)
         be = max(bs, beat_end)
         max_be = float(beats_per_bar)
@@ -262,123 +380,160 @@ class StaffView(tk.Canvas):
         x0 = measure_start_x + t0 * measure_width
         x1 = measure_start_x + t1 * measure_width
 
-        # Vertical bounds slightly above and below staff
         y0 = self.top_margin - 5
         y1 = height - self.bottom_margin + 5
 
-        # Tkinter doesn't support alpha, but a light color works as an overlay.
         self.create_rectangle(
             x0,
             y0,
             x1,
             y1,
-            fill="#ffd8d8",  # light pink
+            fill=self.style.selection_fill,
             outline="",
         )
-        
-        
-    def _draw_note(
-        self,
-        x: float,
-        y: float,
-        *,
-        middle_line_y: float,
-        line_spacing: float,
-        highlight: bool = False,
-        note_index: int | None = None,
-    ) -> None:
-        """
-        Draw a single note head + stem at (x, y).
 
-        Parameters
-        ----------
-        x, y:
-            Center position of the note head (in canvas coordinates).
-        middle_line_y:
-            Y coordinate of the middle staff line (B4 reference).
-        line_spacing:
-            Vertical distance between adjacent staff lines.
-        highlight:
-            If True, draw the note head in "selected" style.
-        note_index:
-            Optional index in the flattened note list (for future use:
-            duration, pitch-dependent styling, etc.).
-        """
-        note_radius_x = 6
-        note_radius_y = 4
-
-        # Decide stem direction:
-        # - if the note is below the middle line (bigger y) → stem up
-        # - if above the middle line → stem down
-        stem_length = line_spacing * 3
-
-        if y > middle_line_y:
-            # stem up: start at right side of the head, go upwards
-            stem_x = x + note_radius_x
-            stem_y0 = y
-            stem_y1 = y - stem_length
-        else:
-            # stem down: start at left side of the head, go downwards
-            stem_x = x - note_radius_x
-            stem_y0 = y
-            stem_y1 = y + stem_length
-
-        # Draw stem
-        self.create_line(
-            stem_x,
-            stem_y0,
-            stem_x,
-            stem_y1,
-            fill="black",
-            width=1.2,
-        )
-
-        # Draw note head
-        fill = "deepskyblue" if highlight else "white"
-        outline = "black"
-
-        self.create_oval(
-            x - note_radius_x,
-            y - note_radius_y,
-            x + note_radius_x,
-            y + note_radius_y,
-            fill=fill,
-            outline=outline,
-            width=1.2,
-        )
+    # ===== Graphical helpers for note appearance =================
 
     def _draw_notes(self) -> None:
-        if self.score is None or not self.note_positions:
+        """
+        Draw noteheads, stems and beams using the flattened arrays computed in
+        _recompute_note_positions().
+        """
+        if not self.note_positions:
             return
 
-        width = int(self["width"])
-        height = int(self["height"])
+        # Make sure geometry cache is up-to-date
+        self._compute_staff_geometry()
 
-        staff_height = height - self.top_margin - self.bottom_margin
-        line_spacing = staff_height / 4.0       # same as in _draw_staff
-        top_line_y = self.top_margin
-        middle_line_y = top_line_y + 2 * line_spacing
+        ctx = NoteDrawingContext(
+            canvas=self,
+            style=self.style,
+            line_spacing=self._line_spacing,
+            middle_line_y=self._middle_line_y,
+        )
 
-        for idx, (x, y) in enumerate(self.note_positions):
-            highlight = (idx == self.highlight_index)
+        n = len(self.note_positions)
 
-            self._draw_note(
-                x=x,
-                y=y,
-                middle_line_y=middle_line_y,
-                line_spacing=line_spacing,
-                highlight=highlight,
-                note_index=idx,
+        # First pass: gather per-note drawing info.
+        note_info = []
+        for idx in range(n):
+            x, y = self.note_positions[idx]
+            beats = (
+                self._note_duration_beats[idx]
+                if idx < len(self._note_duration_beats)
+                else 1.0
+            )
+            kind = duration_kind_from_beats(beats)
+            filled = is_filled_notehead(kind)
+            beams = beams_for_kind(kind)
+            measure_index = (
+                self._note_measure_index[idx]
+                if idx < len(self._note_measure_index)
+                else 0
+            )
+            step = self._note_step[idx] if idx < len(self._note_step) else 0
+
+            # Stem direction: notes on or below middle line -> stem up,
+            # notes above middle line -> stem down.
+            # step > 0 means above B4 (our reference at middle line).
+            stem_dir: StemDirection = "down" if step > 0 else "up"
+
+            note_info.append(
+                {
+                    "idx": idx,
+                    "x": x,
+                    "y": y,
+                    "kind": kind,
+                    "filled": filled,
+                    "beams": beams,
+                    "beamable": is_beamable(kind),
+                    "measure_index": measure_index,
+                    "stem_dir": stem_dir,
+                    "highlight": (idx == self.highlight_index),
+                }
             )
 
-    def set_notated_score(self, nscore: "NotatedScore") -> None:
-        """
-        Placeholder: accept a NotatedScore but ignore it for now.
+        # Second pass: draw noteheads and stems, record stem tip positions
+        # for potential beams.
+        stem_tips: Dict[int, Tuple[float, float]] = {}
 
-        Later we'll migrate _recompute_note_positions to use this
-        instead of raw Score.
-        """
-        # For now we just keep the existing behavior (derive from self.score).
-        # When we switch, we might store `self.notated_score = nscore`
-        # and recompute positions from it.
-        pass
+        for info in note_info:
+            idx = info["idx"]
+            x = info["x"]
+            y = info["y"]
+            filled = info["filled"]
+            stem_dir = info["stem_dir"]
+            kind = info["kind"]
+            highlight = info["highlight"]
+
+            # Notehead
+            draw_notehead(
+                ctx,
+                x,
+                y,
+                filled=filled,
+                highlighted=highlight,
+            )
+
+            # Stems: whole notes don't have stems; others do.
+            if kind != "whole":
+                tip_x, tip_y = draw_stem(ctx, x, y, stem_dir)
+                stem_tips[idx] = (tip_x, tip_y)
+
+        # Third pass: build simple beam groups and draw beams.
+        current_group: List[Dict] = []
+
+        def flush_group() -> None:
+            if len(current_group) < 2:
+                return
+            # Smallest beam count wins (so mix of 8th/16th gets at least one beam).
+            group_beams = min(info["beams"] for info in current_group)
+            if group_beams <= 0:
+                return
+
+            # All group notes have the same stem direction by construction.
+            direction: StemDirection = current_group[0]["stem_dir"]
+
+            # Collect stem tips in visual order.
+            tips: List[Tuple[float, float]] = []
+            for info in current_group:
+                tip = stem_tips.get(info["idx"])
+                if tip is not None:
+                    tips.append(tip)
+
+            if len(tips) >= 2:
+                draw_beam_group(ctx, tips, direction, group_beams)
+
+        last_measure = None
+        last_stem_dir: Optional[StemDirection] = None
+
+        for info in note_info:
+            if info["beamable"]:
+                same_measure = (
+                    last_measure is None
+                    or info["measure_index"] == last_measure
+                )
+                same_direction = (
+                    last_stem_dir is None
+                    or info["stem_dir"] == last_stem_dir
+                )
+
+                if current_group and (not same_measure or not same_direction):
+                    # Beam group broken by measure or stem direction change.
+                    flush_group()
+                    current_group = []
+
+                current_group.append(info)
+                last_measure = info["measure_index"]
+                last_stem_dir = info["stem_dir"]
+            else:
+                # Non-beamable note breaks any ongoing group.
+                if current_group:
+                    flush_group()
+                    current_group = []
+                    last_measure = None
+                    last_stem_dir = None
+
+        # Flush trailing group
+        if current_group:
+            flush_group()

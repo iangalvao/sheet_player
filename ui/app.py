@@ -19,9 +19,6 @@ from engine.transport import Transport, Scheduler
 from engine.io import load_project_or_score, save_project_to_json  # or adjust path
 from engine.session import Session
 from domain.theory import transpose_pitch_diatonic
-from domain.notation import NotatedScore, build_notated_score
-
-
 
 if TYPE_CHECKING:
     # for type checkers only; avoids circular import at runtime
@@ -46,7 +43,6 @@ class App:
 
                 # Core state
         self.score: Score = self._make_demo_score()
-        self.notated_score: NotatedScore = build_notated_score(self.score)
         self.project: Project | None = None
         self.main_track: Track | None = None
         self.main_clip = None
@@ -120,8 +116,6 @@ class App:
         self.widgets.set_score(self.editor.score)
         self.widgets.tempo_var.set(str(self.score.tempo_bpm))
         
-        self._rebuild_notation()
-
         # Transport/Metronome
         if self.transport is not None:
             self.transport.set_tempo(self.score.tempo_bpm)
@@ -182,18 +176,32 @@ class App:
             "measures": [
                 {
                     "notes": [
-                        {"pitch": "G4", "duration_beats": 0.5},
-                        {"pitch": "C5", "duration_beats": 2.0},
-                        {"pitch": "D5", "duration_beats": 0.5},
-                        {"pitch": "E5", "duration_beats": 1.0},
+                        {"pitch": "G4", "duration_beats": 0.25},
+                        {"pitch": "F4", "duration_beats": 0.25},
+                        {"pitch": "F4", "duration_beats": 0.25},
+                        {"pitch": "E4", "duration_beats": 0.25},
+                        {"pitch": "C5", "duration_beats": 1.0},
+                        {"pitch": "D5", "duration_beats": 2.0},
                     ]
                 },
                 {
                     "notes": [
-                        {"pitch": "F5", "duration_beats": 1.0},
-                        {"pitch": "E5", "duration_beats": 1.0},
-                        {"pitch": "D5", "duration_beats": 1.0},
+                        {"pitch": "F5", "duration_beats": 4.0}
+                    ]
+                },
+                                {
+                    "notes": [
+                        {"pitch": "G4", "duration_beats": 0.25},
+                        {"pitch": "F4", "duration_beats": 0.25},
+                        {"pitch": "F4", "duration_beats": 0.25},
+                        {"pitch": "E4", "duration_beats": 0.25},
                         {"pitch": "C5", "duration_beats": 1.0},
+                        {"pitch": "D5", "duration_beats": 2.0},
+                    ]
+                },
+                {
+                    "notes": [
+                        {"pitch": "F5", "duration_beats": 4.0}
                     ]
                 },
             ],
@@ -235,16 +243,6 @@ class App:
 
     def _beat_to_fraction_str(self, beat_zero_based: float) -> str:
        return beat_label_from_zero_based(beat_zero_based)
-
-    def _rebuild_notation(self) -> None:
-        """
-        Rebuild the NotatedScore from the current Score.
-
-        For now this is just kept in memory; the UI still renders
-        directly from Score. Later StaffView will consume this.
-        """
-        self.notated_score = build_notated_score(self.score)
-
 
     
     # ====== UI update glue =====================================
@@ -547,9 +545,6 @@ class App:
 
         # 3) Sync active MidiClip events so AUDIO matches edited score
         self.session.sync_active_midi_clip_from_score()
-
-        # 4) Rebuild notation model (for future sheet rendering)
-        self._rebuild_notation()
 
         # 5) Update UI selection
         self.update_ui(new_idx)

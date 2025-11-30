@@ -136,3 +136,38 @@ def build_notated_score(score: Score) -> NotatedScore:
         title=getattr(score, "title", "") or "Untitled",
         measures=measures,
     )
+
+def notated_duration_to_beats(
+    ndur: NotatedDuration,
+    time_signature: tuple[int, int],
+) -> float:
+    """
+    Naive inverse of beats_to_notated_duration for 4/4-style scores.
+
+    We assume:
+      quarter note  -> 1.0 beat
+      half          -> 2.0 beats
+      whole         -> 4.0 beats
+      eighth        -> 0.5 beats
+      sixteenth     -> 0.25 beats
+
+    Dots multiply by (1 + 1/2 + 1/4 + ...).
+    """
+    # Base durations in beats (relative to a quarter-note = 1.0)
+    base_beats = {
+        DurationValue.WHOLE: 4.0,
+        DurationValue.HALF: 2.0,
+        DurationValue.QUARTER: 1.0,
+        DurationValue.EIGHTH: 0.5,
+        DurationValue.SIXTEENTH: 0.25,
+        DurationValue.THIRTY_SECOND: 0.125,
+    }.get(ndur.base, 1.0)
+
+    # Dot factor: e.g. 1 dot => 1 + 1/2 = 1.5
+    factor = 1.0
+    frac = 0.5
+    for _ in range(ndur.dots):
+        factor += frac
+        frac *= 0.5
+
+    return base_beats * factor
