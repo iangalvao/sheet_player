@@ -26,7 +26,15 @@ from notation.drawing import (
     draw_stem,
     draw_beam_group,
     StemDirection,
+    draw_treble_clef,
+    draw_time_signature,
 )
+
+try:
+    from PIL import Image, ImageTk  # type: ignore
+except ImportError:  # graceful fallback
+    Image = None
+    ImageTk = None
 
 
 class StaffView(tk.Canvas):
@@ -81,8 +89,13 @@ class StaffView(tk.Canvas):
         # Visual style (can be swapped later)
         self.style = StyleConfig()
         # Horizontal layout & scrolling
-        self.px_per_beat: float = 40.0   # tune later
+        self.px_per_beat: float = 60.0   # tune later
         self._content_width: int = width  # total logical width of the score
+        self.info_width = self.style.info_region_width
+        self.measure_width = 90.0
+        # Treble clef image cache (optional, uses assets/treble_clef.png)
+        self._clef_image = None
+        self._clef_photo = None
 
     # ===== External API ========================================
 
@@ -156,7 +169,7 @@ class StaffView(tk.Canvas):
             return
 
         x, _ = self.note_positions[index]
-
+        
         first_frac, last_frac = self.xview()
         first_x = first_frac * content_width
         last_x = last_frac * content_width
@@ -177,7 +190,7 @@ class StaffView(tk.Canvas):
         Compute and cache staff geometry for the *visible* area:
         width, height, line spacing, top line, bottom line, and middle line y.
         """
-        width = int(self["width"])      # visible width (clip)
+        width = int(self["width"])   # visible width (clip)
         height = int(self["height"])
 
         staff_height = height - self.top_margin - self.bottom_margin
@@ -200,24 +213,16 @@ class StaffView(tk.Canvas):
         ref_idx = pitch_to_diatonic_index(self._ref_pitch)
         return idx - ref_idx
 
-    def _compute_staff_geometry(self) -> Tuple[int, int, float, float, float]:
-        """
-        Compute and cache staff geometry: width, height, line spacing,
-        top line, bottom line, and middle line y.
-        """
-        width = int(self["width"])
-        height = int(self["height"])
-
-        staff_height = height - self.top_margin - self.bottom_margin
-        line_spacing = staff_height / 4.0  # 4 gaps between 5 lines
-        top_line_y = self.top_margin
-        bottom_line_y = top_line_y + 4 * line_spacing
-
-        self._line_spacing = line_spacing
-        self._middle_line_y = top_line_y + 2 * line_spacing  # 3rd (middle) line
-
-        return width, height, top_line_y, bottom_line_y, line_spacing
-
+    def get_beats_per_bar(self):
+        beats_per_bar = (
+                self.score.time_signature[0]
+                if self.score and self.score.time_signature
+                else 4
+            )
+        if beats_per_bar <= 0:
+                beats_per_bar = 4
+        return beats_per_bar
+    
     def _recompute_note_positions(self) -> None:
         """
         Build:
@@ -249,16 +254,10 @@ class StaffView(tk.Canvas):
             if not measures:
                 return
 
-            num_measures = len(measures)
-            beats_per_bar = (
-                self.score.time_signature[0]
-                if self.score and self.score.time_signature
-                else 4
-            )
-            if beats_per_bar <= 0:
-                beats_per_bar = 4
+            beats_per_bar = self.get_beats_per_bar()
 
             measure_width = beats_per_bar * self.px_per_beat
+            self.measure_width = measure_width
 
             content_x = self.left_margin
             for m in measures:
@@ -274,7 +273,7 @@ class StaffView(tk.Canvas):
 
                     # 0..beats_per_bar → 0..1 within measure
                     t = min(max(center_beat / float(beats_per_bar), 0.0), 1.0)
-                    x = measure_start_x + t * measure_width
+                    x = measure_start_x + self.info_width + t * measure_width
 
                     step = self._pitch_to_staff_step(atom.pitch)
                     y = middle_line_y - step * half_step
@@ -301,13 +300,10 @@ class StaffView(tk.Canvas):
         if not measures:
             return
 
-        num_measures = len(measures)
-        beats_per_bar = self.score.time_signature[0] if self.score.time_signature else 4
-        if beats_per_bar <= 0:
-            beats_per_bar = 4
-
+        beats_per_bar = self.get_beats_per_bar()
+        
         measure_width = beats_per_bar * self.px_per_beat
-
+        self.measure_width = measure_width
         content_x = self.left_margin
         for mi, measure in enumerate(measures):
             measure_start_x = content_x
@@ -336,18 +332,25 @@ class StaffView(tk.Canvas):
 
     def _redraw(self) -> None:
         self.delete("all")
-        self._draw_staff()
         self._draw_selection_overlay()
+        self._recompute_note_positions()
+        self._draw_staff()
         self._draw_notes()
-
+        
+        
     def _draw_staff(self) -> None:
-        """Draw the 5 staff lines + barlines + beat grid."""
+        """Draw the 5 staff lines + barlines + beat grid + clef + time signature."""
         width, height, top_line_y, bottom_line_y, line_spacing = self._compute_staff_geometry()
         cfg = self.style
+        self._recompute_note_positions()
+        # Staff horizontal span
+        inner_total = self._content_width - self.right_margin - self.left_margin
+        info_w = self.info_width
+        usable_width = max(0.0, inner_total - info_w)
 
-        # Use content width if it's larger than visible width
-        content_width = max(self._content_width, width)
-        usable_width = content_width - self.left_margin - self.right_margin
+        measures = self.score.measures
+        num_measures = len(measures)
+
 
         # --- horizontal staff lines ---
         for i in range(5):
@@ -355,29 +358,27 @@ class StaffView(tk.Canvas):
             self.create_line(
                 self.left_margin,
                 y,
-                content_width - self.right_margin,
+                self.left_margin + self.info_width + self.measure_width * num_measures,
                 y,
                 fill=cfg.staff_line_color,
                 width=cfg.staff_line_width,
             )
 
+        # --- clef + time sig in the info area ---
+        self._draw_clef_and_time_signature(top_line_y, line_spacing)
+
+        # --- barlines + beat grid (if we have a score) ---
         if self.score is None or not self.score.measures:
             return
 
-        measures = self.score.measures
-        num_measures = len(measures)
-        if num_measures <= 0:
+        if num_measures <= 0 or usable_width <= 0:
             return
 
-        beats_per_bar = self.score.time_signature[0] if self.score.time_signature else 4
-        if beats_per_bar <= 0:
-            beats_per_bar = 4
-
-        measure_width = beats_per_bar * self.px_per_beat
-
-        # Draw barlines
+        measure_width = usable_width / num_measures
+        beats_per_bar = self.get_beats_per_bar()
+        # Draw barlines (between measures and at the end)
         for mi in range(num_measures + 1):
-            x_bar = self.left_margin + mi * measure_width
+            x_bar = self.left_margin + info_w + mi * self.measure_width
             self.create_line(
                 x_bar,
                 top_line_y,
@@ -387,13 +388,13 @@ class StaffView(tk.Canvas):
                 width=cfg.barline_width,
             )
 
-        # Draw light beat grid
+        # Draw light beat grid inside each measure
         if beats_per_bar > 0:
             for mi in range(num_measures):
-                measure_start_x = self.left_margin + mi * measure_width
+                measure_start_x = self.left_margin + info_w + mi * self.measure_width
                 for b in range(1, beats_per_bar):
                     t = b / beats_per_bar
-                    x = measure_start_x + t * measure_width
+                    x = measure_start_x + t * self.measure_width
                     self.create_line(
                         x,
                         top_line_y,
@@ -417,12 +418,11 @@ class StaffView(tk.Canvas):
 
         width = int(self["width"])
         height = int(self["height"])
-        beats_per_bar = self.score.time_signature[0] if self.score.time_signature else 4
-        if beats_per_bar <= 0:
-            return
+        beats_per_bar = self.get_beats_per_bar()
 
         measure_width = beats_per_bar * self.px_per_beat
-        measure_start_x = self.left_margin + measure_index * measure_width
+        measure_start_x = self.left_margin + self.info_width + measure_index * measure_width
+
 
         bs = max(0.0, beat_start)
         be = max(bs, beat_end)
@@ -593,3 +593,70 @@ class StaffView(tk.Canvas):
         # Flush trailing group
         if current_group:
             flush_group()
+
+    def _draw_treble_clef_image(
+        self,
+        top_line_y: float,
+        line_spacing: float,
+    ) -> bool:
+        """
+        Try to draw the treble clef from assets/treble_clef.png.
+        Returns True on success, False if we should fall back to vector/glyph.
+        """
+        if Image is None or ImageTk is None:
+            return False
+
+        # Lazy-load original image
+        if self._clef_image is None:
+            try:
+                self._clef_image = Image.open("assets/treble_clef.png")
+            except Exception:
+                return False
+
+        # Scale image to staff height
+        staff_height = 4 * line_spacing
+        target_h = int(staff_height * 1.2)
+        if target_h <= 0:
+            target_h = 10
+
+        w, h = self._clef_image.size
+        scale = target_h / float(h)
+        target_w = max(1, int(w * scale))
+
+        img_resized = self._clef_image.resize((target_w, target_h), Image.LANCZOS)
+        self._clef_photo = ImageTk.PhotoImage(img_resized)
+
+        x = self.left_margin + self.info_width * 0.3
+        y = top_line_y + 2 * line_spacing  # around middle of staff
+
+        self.create_image(x, y, image=self._clef_photo)
+        return True
+
+    def _draw_clef_and_time_signature(
+        self,
+        top_line_y: float,
+        line_spacing: float,
+    ) -> None:
+        """
+        Draw treble clef + time signature inside the info region, before the first barline.
+        """
+        ctx = NoteDrawingContext(
+            canvas=self,
+            style=self.style,
+            line_spacing=line_spacing,
+            middle_line_y=self._middle_line_y,
+        )
+
+        info_w = self.info_width
+
+        # 1) Clef: try image, fall back to glyph
+        drew_image = self._draw_treble_clef_image(top_line_y, line_spacing)
+        if not drew_image:
+            clef_x = self.left_margin + info_w * 0.3
+            draw_treble_clef(ctx, clef_x, top_line_y, line_spacing)
+
+        # 2) Time signature (if available)
+        if self.score is not None and self.score.time_signature:
+            num, den = self.score.time_signature
+            ts_x = self.left_margin + info_w * 0.75
+            draw_time_signature(ctx, ts_x, top_line_y, line_spacing, num, den)

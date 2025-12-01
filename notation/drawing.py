@@ -127,3 +127,68 @@ def draw_beam_group(
             fill=cfg.fill_quarter_and_shorter,
             capstyle=tk.PROJECTING,
         )
+        
+def draw_treble_clef(
+    ctx: NoteDrawingContext,
+    x: float,
+    top_line_y: float,
+    line_spacing: float,
+) -> None:
+    """
+    Draw a simple treble clef at the left of the staff.
+
+    For now we use the Unicode 𝄞 glyph; later this can be replaced by
+    a custom vector path or an image for more consistent rendering.
+    """
+    # Vertical center: around lines 2–3
+    y_center = top_line_y + 2 * line_spacing
+
+    # Font size scaled to staff size
+    font_size = int(line_spacing * 3.0)
+    if font_size < 10:
+        font_size = 10
+
+    ctx.canvas.create_text(
+        x,
+        y_center,
+        text="𝄞",
+        font=("DejaVu Sans", font_size),
+        fill=ctx.style.outline,
+    )
+
+def draw_time_signature(
+    ctx: NoteDrawingContext,
+    x: float,
+    top_line_y: float,
+    line_spacing: float,
+    numerator: int,
+    denominator: int,
+) -> None:
+    """
+    Draw a simple numeric time signature (e.g. 4/4) just to the right
+    of the clef, stacked vertically.
+    """
+    # Place numerator around line 2, denominator around line 4.
+    y_num = top_line_y + 1.2 * line_spacing
+    y_den = top_line_y + 2.8 * line_spacing
+
+    font_size = int(line_spacing * 1.8)
+    if font_size < 8:
+        font_size = 8
+
+    font = ("DejaVu Sans", font_size)
+
+    ctx.canvas.create_text(
+        x,
+        y_num,
+        text=str(numerator),
+        font=font,
+        fill=ctx.style.outline,
+    )
+    ctx.canvas.create_text(
+        x,
+        y_den,
+        text=str(denominator),
+        font=font,
+        fill=ctx.style.outline,
+    )

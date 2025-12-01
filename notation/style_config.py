@@ -1,4 +1,4 @@
-# ui/style_config.py
+# notation/style_config.py
 from __future__ import annotations
 from dataclasses import dataclass
 
@@ -7,9 +7,6 @@ from dataclasses import dataclass
 class StyleConfig:
     """
     Central configuration for staff drawing styles.
-
-    You can evolve this over time (ledger lines, rests, slurs/ties, fonts, etc.)
-    without touching the rest of the drawing logic too much.
     """
     # Notehead geometry
     note_radius_x: float = 6.0
@@ -36,6 +33,9 @@ class StyleConfig:
 
     staff_line_color: str = "black"
     barline_color: str = "#444444"
-    beat_grid_color: str = "#dddddd"
+    beat_grid_color: str = "#bbbbbb"
 
     selection_fill: str = "#ffd8d8"
+
+    # NEW: space reserved for clef + key + time signature
+    info_region_width: float = 90.0

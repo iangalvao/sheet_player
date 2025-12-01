@@ -224,6 +224,7 @@ class App:
                         {"pitch": "G4", "duration_beats": 0.25},
                         {"pitch": "F4", "duration_beats": 0.25},
                         {"pitch": "E4", "duration_beats": 0.25},
+                        {"pitch": "F4", "duration_beats": 0.25},
                         {"pitch": "C5", "duration_beats": 1.0},
                         {"pitch": "D5", "duration_beats": 2.0},
                     ]
