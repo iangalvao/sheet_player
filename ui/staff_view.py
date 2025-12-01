@@ -259,7 +259,7 @@ class StaffView(tk.Canvas):
             measure_width = beats_per_bar * self.px_per_beat
             self.measure_width = measure_width
 
-            content_x = self.left_margin
+            content_x = self.left_margin + self.info_width
             for m in measures:
                 measure_index = m.index
                 measure_start_x = content_x
@@ -273,7 +273,7 @@ class StaffView(tk.Canvas):
 
                     # 0..beats_per_bar → 0..1 within measure
                     t = min(max(center_beat / float(beats_per_bar), 0.0), 1.0)
-                    x = measure_start_x + self.info_width + t * measure_width
+                    x = measure_start_x  + t * measure_width
 
                     step = self._pitch_to_staff_step(atom.pitch)
                     y = middle_line_y - step * half_step
