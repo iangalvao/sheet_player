@@ -1,39 +1,27 @@
 # app.py
 from __future__ import annotations
 
-import json
 import time
 import tkinter as tk
-from tkinter import filedialog, messagebox
 from typing import TYPE_CHECKING, Callable
 
-from domain.score import Score
 from engine.audio_engine import AudioEngine
 from engine.player import PlaybackController
 from engine.metronome import Metronome
-from ui.widgets import Widgets
-from domain.editor import EditorController
 from engine.timebase import beat_label_from_zero_based
 from engine.project import Project, Track
 from engine.transport import Transport, Scheduler
-from engine.io import load_project_or_score, save_project_to_json  # or adjust path
 from engine.session import Session
+from ui.widgets import Widgets
+from ui.file_actions import FileActions
+from domain.editor import EditorController
+from domain.score import Score
 from domain.theory import transpose_pitch_diatonic
 
 if TYPE_CHECKING:
     # for type checkers only; avoids circular import at runtime
     from widgets import Widgets as WidgetsType
 
-
-def load_score_from_json(path: str) -> Score:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    return Score.from_dict(data)
-
-
-def save_score_to_json(score: Score, path: str) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(score.to_dict(), f, indent=2)
 
 
 class App:
@@ -69,6 +57,14 @@ class App:
             transport=self.transport,
             scheduler=self.scheduler,
         )
+        
+        # File / project actions helper
+        self.file_actions = FileActions(
+            root=self.root,
+            apply_loaded_score_and_project=self._apply_loaded_score_and_project,
+            get_score=lambda: self.score,
+        )
+
         # Inform session about the project
         self._build_project_from_score()
         self.session.set_project(self.project)
@@ -267,20 +263,15 @@ class App:
         self.widgets.set_score(self.editor.score)
         
         
-        
-
-    # ====== Pitch and Beat helpers (diatonic, clamped) ==================
-
-    def _beat_to_fraction_str(self, beat_zero_based: float) -> str:
-       return beat_label_from_zero_based(beat_zero_based)
-
     
     # ====== UI update glue =====================================
 
     def _player_update_callback(self, current_idx, _notes_flat) -> None:
         """Called by PlaybackController when playback advances."""
         self.editor.set_selection_index(current_idx)
-        self.update_ui(current_idx)
+        #self.update_ui(current_idx)
+        self.widgets.highlight_note(current_idx)
+
     
     def _update_status_from_index(self, idx: int) -> None:
         if self.player is None or not self.player.notes_flat:
@@ -293,8 +284,8 @@ class App:
             interval = self.editor.get_selection_interval()
             if interval is not None:
                 mi, beat_start, beat_end = interval
-                beat_start_str = self._beat_to_fraction_str(beat_start)
-                beat_end_str = self._beat_to_fraction_str(beat_end)
+                beat_start_str = beat_label_from_zero_based(beat_start)
+                beat_end_str = beat_label_from_zero_based(beat_end)
 
                 # Overlay
                 self.widgets.set_selection_region(mi, beat_start, beat_end)
@@ -315,8 +306,8 @@ class App:
             return
 
         mi, ni, beat_start, beat_end = note_info
-        beat_start_str = self._beat_to_fraction_str(beat_start)
-        beat_end_str = self._beat_to_fraction_str(beat_end)
+        beat_start_str = beat_label_from_zero_based(beat_start)
+        beat_end_str = beat_label_from_zero_based(beat_end)
 
         # Overlay uses the single-note interval
         self.widgets.set_selection_region(mi, beat_start, beat_end)
@@ -356,63 +347,18 @@ class App:
         self._update_status_from_index(idx)
 
     # ====== Menu / file actions ================================
+        # ====== Menu / file actions ================================
     def on_open_project(self) -> None:
-        path = filedialog.askopenfilename(
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
-        )
-        if not path:
-            return
+        self.file_actions.open_project()
 
-        try:
-            project, score = load_project_or_score(path)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load file:\n{e}")
-            return
-
-        self._apply_loaded_score_and_project(score, project)
-    
     def on_open(self) -> None:
-        path = filedialog.askopenfilename(
-            filetypes=[("JSON scores", "*.json"), ("All files", "*.*")]
-        )
-        if not path:
-            return
-        try:
-            new_score = load_score_from_json(path)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to load score:\n{e}")
-            return
-
-        # No project in this case → None
-        self._apply_loaded_score_and_project(new_score, project=None)
+        self.file_actions.open_score()
 
     def on_save_project_as(self) -> None:
-        path = filedialog.asksaveasfilename(
-            defaultextension=".json",
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
-        )
-        if not path:
-            return
-
-        try:
-            # Ensure project reflects current score
-            self.project = Project.from_score(self.score, track_name="Flute")
-            save_project_to_json(path, self.project, self.score)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to save project:\n{e}")
+        self.file_actions.save_project_as()
 
     def on_save_as(self) -> None:
-        path = filedialog.asksaveasfilename(
-            defaultextension=".json",
-            filetypes=[("JSON scores", "*.json"), ("All files", "*.*")],
-        )
-        if not path:
-            return
-        try:
-            save_score_to_json(self.score, path)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to save score:\n{e}")
-
+        self.file_actions.save_score_as()
 
     def on_quit(self) -> None:
         self.root.quit()
@@ -580,6 +526,8 @@ class App:
         # 5) Update UI selection
         self.update_ui(new_idx)
 
+    # ====== Key binds ========================
+    
     def on_key(self, event) -> None:
         key = event.keysym
 
