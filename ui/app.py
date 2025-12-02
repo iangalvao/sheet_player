@@ -172,10 +172,10 @@ class App:
             "measures": [
                 {
                     "notes": [
-                        {"pitch": "G4", "duration_beats": 0.25},
+                        {"pitch": "G#4", "duration_beats": 0.25},
+                        {"pitch": "F#4", "duration_beats": 0.25},
                         {"pitch": "F4", "duration_beats": 0.25},
-                        {"pitch": "F4", "duration_beats": 0.25},
-                        {"pitch": "E4", "duration_beats": 0.25},
+                        {"pitch": "Eb4", "duration_beats": 0.25},
                         {"pitch": "C5", "duration_beats": 1.0},
                         {"pitch": "D5", "duration_beats": 2.0},
                     ]
@@ -202,17 +202,17 @@ class App:
                 },
                            {
                     "notes": [
-                        {"pitch": "G4", "duration_beats": 0.25},
-                        {"pitch": "F4", "duration_beats": 0.25},
-                        {"pitch": "F4", "duration_beats": 0.25},
+                        {"pitch": "G#4", "duration_beats": 0.25},
+                        {"pitch": "F#4", "duration_beats": 0.25},
+                        {"pitch": "F#4", "duration_beats": 0.25},
                         {"pitch": "E4", "duration_beats": 0.25},
-                        {"pitch": "C5", "duration_beats": 1.0},
-                        {"pitch": "D5", "duration_beats": 2.0},
+                        {"pitch": "C#5", "duration_beats": 1.0},
+                        {"pitch": "D#5", "duration_beats": 2.0},
                     ]
                 },
                 {
                     "notes": [
-                        {"pitch": "F5", "duration_beats": 4.0}
+                        {"pitch": "F#5", "duration_beats": 4.0}
                     ]
                 },
                                 {
@@ -500,8 +500,8 @@ class App:
     def move_selection(self, delta: int) -> None:
         new_idx = self.session.move_selection(delta)
         if new_idx is not None:
-            self.update_ui(new_idx)
-
+            self.widgets.highlight_note(new_idx)
+            
     def change_selected_pitch(self, delta_steps: int) -> None:
         if self.player is None or not self.player.notes_flat:
             return

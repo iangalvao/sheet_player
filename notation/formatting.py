@@ -91,7 +91,7 @@ class StaffLayoutConfig:
     info_region_width: float = 90.0
 
     # Horizontal density: pixels per beat
-    px_per_beat: float = 60.0
+    px_per_beat: float = 110.0
 
 
 class HorizontalLayout:

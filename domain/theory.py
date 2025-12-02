@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import Final
 
 LETTER_ORDER: Final[list[str]] = ["C", "D", "E", "F", "G", "A", "B"]
-MIN_DIATONIC_INDEX: Final[int] = LETTER_ORDER.index("E") + 7 * 4  # E4
-MAX_DIATONIC_INDEX: Final[int] = LETTER_ORDER.index("F") + 7 * 5  # F5
+MIN_DIATONIC_INDEX: Final[int] = LETTER_ORDER.index("E") + 7 * 2  # E4
+MAX_DIATONIC_INDEX: Final[int] = LETTER_ORDER.index("F") + 7 * 7  # F5
 
 
 def pitch_to_diatonic_index(pitch: str) -> int:

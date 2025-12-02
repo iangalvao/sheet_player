@@ -60,7 +60,7 @@ class StaffViewCore:
         self._note_measure_index: List[int] = []
         self._note_duration_beats: List[float] = []
         self._note_step: List[int] = []
-
+        self._note_pitch: List[str] = []
         # Cached drawing properties per note (precomputed in _recompute_note_positions)
         self._note_kind: List[str] = []
         self._note_filled: List[bool] = []
@@ -191,6 +191,7 @@ class StaffViewCore:
         self._note_beams = []
         self._note_beamable = []
         self._note_stem_dir = []
+        self._note_pitch = []
 
         width, height, _, _, line_spacing = self._compute_staff_geometry()
         half_step = line_spacing / 2.0
@@ -234,7 +235,7 @@ class StaffViewCore:
                     self._note_measure_index.append(measure_index)
                     self._note_duration_beats.append(dur_beats)
                     self._note_step.append(step)
-
+                    self._note_pitch.append(atom.pitch)
                     # Cached draw properties
                     kind = self.duration_formatter.classify(dur_beats)
                     filled = self.duration_formatter.is_filled(kind)
@@ -303,7 +304,8 @@ class StaffViewCore:
                 self._note_beams.append(beams)
                 self._note_beamable.append(beamable)
                 self._note_stem_dir.append(stem_dir)
-
+                self._note_pitch.append(note.pitch)
+                
                 beat_pos += dur_beats
 
         num_measures = len(measures)
@@ -322,6 +324,25 @@ class StaffViewCore:
         self._draw_staff()
         self._draw_notes()
         self._update_highlight_overlay()
+
+    # ===== Highlight overlay ============================================
+
+    def _accidental_from_pitch(self, pitch: str) -> Optional[str]:
+        """
+        Very naive pitch parser:
+          - 'C#4' -> 'sharp'
+          - 'Bb4' -> 'flat'
+          - otherwise -> None (no explicit accidental drawn)
+        """
+        # Avoid octave digits
+        core = pitch[:-1] if pitch and pitch[-1].isdigit() else pitch
+        if "#" in core:
+            return "sharp"
+        if "b" in core:
+            return "flat"
+        # Later we might draw naturals where needed based on key signature
+        return None
+
 
     # ===== Highlight overlay ============================================
 
@@ -514,6 +535,20 @@ class StaffViewCore:
             kind = info["kind"]
             highlight = info["highlight"]
 
+            # 1) Ledger lines (for out-of-staff notes)
+            step = self._note_step[idx] if idx < len(self._note_step) else 0
+            painter.draw_ledger_lines(x, step)
+
+            # 2) Accidentals (if any)
+            if idx < len(self._note_pitch):
+                pitch = self._note_pitch[idx]
+                acc = self._accidental_from_pitch(pitch)
+                if acc is not None:
+                    # Shift accidental a bit to the left of the note
+                    x_acc = x - (self.style.note_radius_x + self.style.accidental_x_offset)
+                    painter.draw_accidental(x_acc, y, acc)
+
+            # 3) Notehead
             painter.draw_notehead(
                 x,
                 y,
@@ -521,6 +556,7 @@ class StaffViewCore:
                 highlighted=highlight,
             )
 
+            # 4) Stem
             if kind != "whole":
                 tip_x, tip_y = painter.draw_stem(x, y, stem_dir)
                 stem_tips[idx] = (tip_x, tip_y)

@@ -177,3 +177,81 @@ class NotePainter:
             font=font,
             fill=self.ctx.style.outline,
         )
+
+    def draw_ledger_lines(self, x: float, step: int) -> None:
+        """
+        Draw ledger lines for a note at diatonic 'step' relative to B4 = 0.
+
+        Staff lines correspond to steps -4, -2, 0, 2, 4.
+        Anything beyond that range gets ledger lines at every second step.
+        """
+        cfg = self.ctx.style
+        line_spacing = self.ctx.line_spacing
+        middle_y = self.ctx.middle_line_y
+
+        half_step = line_spacing / 2.0
+
+        # Staff covers steps -4..4 at even values (lines)
+        min_staff_step = -4
+        max_staff_step = 4
+
+        if min_staff_step <= step <= max_staff_step:
+            return  # note is on/within the staff; no ledger lines
+
+        # Determine which line-steps need ledger lines
+        ledger_steps: list[int] = []
+        if step > max_staff_step:
+            s = max_staff_step + 2
+            while s <= step:
+                ledger_steps.append(s)
+                s += 2
+        else:  # step < min_staff_step
+            s = min_staff_step - 2
+            while s >= step:
+                ledger_steps.append(s)
+                s -= 2
+
+        half_len = cfg.ledger_line_length / 2.0
+
+        for s in ledger_steps:
+            y = middle_y - s * half_step
+            self.ctx.canvas.create_line(
+                x - half_len,
+                y,
+                x + half_len,
+                y,
+                width=cfg.ledger_line_width,
+                fill=cfg.staff_line_color,
+            )
+
+    # ---------- NEW: accidentals --------------------------------------
+
+    def draw_accidental(self, x: float, y: float, accidental: str) -> None:
+        """
+        Draw an accidental at (x, y) to the left of the notehead.
+
+        accidental: "sharp", "flat", "natural"
+        """
+        if accidental not in ("sharp", "flat", "natural"):
+            return
+
+        cfg = self.ctx.style
+        # Choose glyph
+        if accidental == "sharp":
+            glyph = "♯"
+        elif accidental == "flat":
+            glyph = "♭"
+        else:
+            glyph = "♮"
+
+        # Font size scaled to staff
+        base_size = self.ctx.line_spacing * cfg.accidental_font_scale
+        font_size = max(int(base_size), 8)
+
+        self.ctx.canvas.create_text(
+            x,
+            y,
+            text=glyph,
+            font=("DejaVu Sans", font_size),
+            fill=cfg.outline,
+        )
